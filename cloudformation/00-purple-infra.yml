@@ -1,0 +1,117 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Purple — full demo environment (nested stacks)
+
+###############################################################################
+# Parameters you’re likely to override at deploy time
+###############################################################################
+Parameters:
+  Tags:
+    Type: Json
+    Default: |
+      {
+        "Project":   "S1_Purple",
+        "Owner":     "SentinelOne_partner_team",
+        "Environment":"demo"
+      }
+
+  # ─── VPC ────────────────────────────────────────────────────────────────────
+  VpcCidr:            { Type: String,  Default: 10.0.0.0/16 }
+  PublicSubnetCidrs:  { Type: CommaDelimitedList, Default: 10.0.1.0/24,10.0.2.0/24 }
+  AvailabilityZones:  { Type: CommaDelimitedList, Default: us-east-1a,us-east-1b }
+
+  # ─── Shared S3 bucket ──────────────────────────────────────────────────────
+  BucketName:         { Type: String,  Default: purple-vulnerable-demo }
+  Environment:        { Type: String,  Default: demo }
+  OffSecIps:          { Type: CommaDelimitedList, Default: "" }
+
+  # ─── EKS cluster ───────────────────────────────────────────────────────────
+  ClusterName:        { Type: String,  Default: purple-eks-demo }
+  EnablePublicAccess: { Type: String, AllowedValues: [true,false], Default: false }
+  EnableSSH:          { Type: String, AllowedValues: [true,false], Default: false }
+  SshKeyPairName:     { Type: String,  Default: "" }
+
+  # ─── DVWA EC2 ──────────────────────────────────────────────────────────────
+  DvwaInstanceCount:  { Type: Number, Default: 1 }
+  DvwaAllowedCidr:    { Type: CommaDelimitedList, Default: 0.0.0.0/0 }
+
+###############################################################################
+# Nested stacks
+###############################################################################
+Resources:
+
+# 1️⃣  VPC
+VpcStack:
+  Type: AWS::CloudFormation::Stack
+  Properties:
+    TemplateURL: ./01-vpc.yml
+    Parameters:
+      NamePrefix: purple
+      VpcCidr:           !Ref VpcCidr
+      PublicSubnetCidrs: !Ref PublicSubnetCidrs
+      AvailabilityZones: !Ref AvailabilityZones
+      Tags:              !Ref Tags
+
+# 2️⃣  Shared services (S3 + KMS etc.)
+SharedStack:
+  Type: AWS::CloudFormation::Stack
+  DependsOn: VpcStack
+  Properties:
+    TemplateURL: ./02-shared-services.yml
+    Parameters:
+      BucketName:                !Ref BucketName
+      Environment:               !Ref Environment
+      AllowedInboundCidrBlocks:  0.0.0.0/0
+      OffensiveSecurityAccess:   !Ref OffSecIps
+      Tags:                      !Ref Tags
+
+# 3️⃣  EKS
+EksStack:
+  Type: AWS::CloudFormation::Stack
+  DependsOn: SharedStack
+  Properties:
+    TemplateURL: ./03-eks.yml
+    Parameters:
+      VpcId:         !GetAtt VpcStack.Outputs.VpcId
+      VpcCidr:       !GetAtt VpcStack.Outputs.VpcCidr
+      SubnetIds:     !GetAtt VpcStack.Outputs.PublicSubnetIds
+      ClusterName:   !Ref ClusterName
+      EnablePublicAccess: !Ref EnablePublicAccess
+      EnableSSH:     !Ref EnableSSH
+      SshKeyPairName:!Ref SshKeyPairName
+      AllowedInboundCidrBlocks: !Ref DvwaAllowedCidr
+      Tags:          !Ref Tags
+    Capabilities: [CAPABILITY_IAM, CAPABILITY_NAMED_IAM, CAPABILITY_AUTO_EXPAND]
+
+# 4️⃣  DVWA EC2 demo
+DvwaStack:
+  Type: AWS::CloudFormation::Stack
+  DependsOn: EksStack
+  Properties:
+    TemplateURL: ./04-ec2.yml
+    Parameters:
+      VpcId:         !GetAtt VpcStack.Outputs.VpcId
+      SubnetIds:     !GetAtt VpcStack.Outputs.PublicSubnetIds
+      InstanceCount: !Ref DvwaInstanceCount
+      AllowedInboundCidrBlocks: !Ref DvwaAllowedCidr
+      Tags:          !Ref Tags
+    Capabilities: [CAPABILITY_IAM]
+
+# 5️⃣  CloudTrail (optional – comment this out if you disabled it)
+CloudTrailStack:
+  Type: AWS::CloudFormation::Stack
+  DependsOn: DvwaStack
+  Properties:
+    TemplateURL: ./05-cloudtrail.yml
+    Parameters:
+      NamePrefix: purple
+      Tags:       !Ref Tags
+    Capabilities: [CAPABILITY_IAM, CAPABILITY_NAMED_IAM]
+
+###############################################################################
+# Convenience outputs
+###############################################################################
+Outputs:
+  VpcId:         { Value: !GetAtt VpcStack.Outputs.VpcId }
+  EksEndpoint:   { Value: !GetAtt EksStack.Outputs.ClusterEndpoint }
+  EksKubeconfig: { Value: !GetAtt EksStack.Outputs.EksKubeconfigCommand }
+  DvwaSG:        { Value: !GetAtt DvwaStack.Outputs.InstanceSecurityGroupId }

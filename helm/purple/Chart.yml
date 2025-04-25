@@ -1,0 +1,6 @@
+apiVersion: v2
+name: dvwa
+description: Damn Vulnerable Web Application for Purple demo
+type: application
+version: 1.5.0        # chart version
+appVersion: "latest"  # DVWA image tag (not used for MySQL)

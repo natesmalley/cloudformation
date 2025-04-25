@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "dvwa.fullname" . }}
+  labels:
+    {{- include "dvwa.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "dvwa.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "dvwa.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: dvwa
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: 80
+              protocol: TCP
+          env:
+            - name: MYSQL_HOST
+              value: dvwa-db
+            - name: MYSQL_USER
+              value: dvwa
+            - name: MYSQL_PASSWORD
+              value: p@ssw0rd
+            - name: MYSQL_DBNAME
+              value: dvwa
+          readinessProbe:
+            httpGet:
+              path: /login.php
+              port: 80
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /login.php
+              port: 80
+            initialDelaySeconds: 20
+            periodSeconds: 10

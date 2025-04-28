@@ -1,0 +1,147 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  EKS cluster (1.28) with a 2-node managed nodegroup, plus two Helm releases:
+    • aws-labs/amazon-sagemaker-operator-for-k8s (v1.1.0)
+    • aws-samples/bedrock-k8s-operator (v0.1.0)
+
+Parameters:
+  NamePrefix:
+    Type: String
+    Default: myai
+    Description: Prefix for all resource names
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: Existing VPC ID
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: At least two private subnets for EKS
+
+  ClusterVersion:
+    Type: String
+    Default: "1.28"
+    Description: EKS Kubernetes version
+
+  NodeInstanceType:
+    Type: String
+    Default: t3.medium
+    Description: EC2 instance type for EKS nodes
+
+  NodeGroupDesiredSize:
+    Type: Number
+    Default: 2
+
+  NodeGroupMinSize:
+    Type: Number
+    Default: 2
+
+  NodeGroupMaxSize:
+    Type: Number
+    Default: 2
+
+Conditions:
+  AlwaysTrue: !Equals [ "true", "true" ]
+
+Resources:
+
+  ### IAM Roles for EKS ###
+  EksClusterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: eks.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+        - arn:aws:iam::aws:policy/AmazonEKSVPCResourceController
+
+  NodeInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
+        - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+
+  ### EKS Cluster ###
+  EksCluster:
+    Type: AWS::EKS::Cluster
+    Properties:
+      Name: !Sub "${NamePrefix}-eks"
+      Version: !Ref ClusterVersion
+      RoleArn: !GetAtt EksClusterRole.Arn
+      ResourcesVpcConfig:
+        VpcId: !Ref VpcId
+        SubnetIds: !Ref SubnetIds
+        EndpointPrivateAccess: true
+        EndpointPublicAccess: false
+
+  ### Managed Node Group ###
+  NodeGroup:
+    Type: AWS::EKS::Nodegroup
+    Properties:
+      ClusterName: !Ref EksCluster
+      NodegroupName: !Sub "${NamePrefix}-nodes"
+      Subnets: !Ref SubnetIds
+      NodeRole: !GetAtt NodeInstanceRole.Arn
+      ScalingConfig:
+        MinSize: !Ref NodeGroupMinSize
+        DesiredSize: !Ref NodeGroupDesiredSize
+        MaxSize: !Ref NodeGroupMaxSize
+      InstanceTypes: [ !Ref NodeInstanceType ]
+
+  ### Helm Chart: SageMaker Operator ###
+  SageMakerOperator:
+    Condition: AlwaysTrue
+    Type: AWSQS::EKS::HelmChart
+    DependsOn: NodeGroup
+    Properties:
+      ClusterName: !Ref EksCluster
+      Name: !Sub "${NamePrefix}-sagemaker-operator"
+      Namespace: default
+      Chart: >
+        https://github.com/awslabs/amazon-sagemaker-operator-for-k8s
+        /releases/download/v1.1.0/chart.tgz
+      Wait: true
+      # no custom values; use defaults
+
+  ### Helm Chart: Bedrock Operator ###
+  BedrockOperator:
+    Condition: AlwaysTrue
+    Type: AWSQS::EKS::HelmChart
+    DependsOn: NodeGroup
+    Properties:
+      ClusterName: !Ref EksCluster
+      Name: !Sub "${NamePrefix}-bedrock-operator"
+      Namespace: default
+      Chart: >
+        https://github.com/aws-samples/bedrock-k8s-operator
+        /releases/download/v0.1.0/bedrock-operator-0.1.0.tgz
+      Wait: true
+      # no custom values; use defaults
+
+Outputs:
+  ClusterName:
+    Description: EKS cluster name
+    Value: !Ref EksCluster
+
+  ClusterEndpoint:
+    Description: API server endpoint
+    Value: !GetAtt EksCluster.Endpoint
+
+  KubeconfigCommand:
+    Description: Command to update kubeconfig for kubectl
+    Value: !Sub |
+      aws eks update-kubeconfig \
+        --region ${AWS::Region} \
+        --name ${NamePrefix}-eks

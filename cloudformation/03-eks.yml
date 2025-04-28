@@ -1,234 +1,229 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  Purple – EKS cluster (converted from Terraform).
-  Creates: control plane, managed node group, optional Fargate, OIDC provider,
-  CloudWatch log group, IRSA, and DVWA Helm release.
+  Purple – EKS cluster (control plane, managed node group, optional Fargate,
+  CloudWatch log group, and a DVWA Helm release).
 
 ###############################################################################
-# Parameters – mirrors variables.tf
+# Parameters
 ###############################################################################
 Parameters:
-  NamePrefix:              { Type: String,  Default: purple }
 
-  # VPC plumbing (imported from 01-vpc)
-  VpcId:                   { Type: String,  Default: !ImportValue purple-network-VpcId }
-  VpcCidr:                 { Type: String,  Default: !ImportValue purple-network-VpcCidr }
-  SubnetIds:               { Type: CommaDelimitedList, Default: !ImportValue purple-network-PublicSubnetIds }
+  # Subnets for the cluster
+  SubnetIds:
+    Type: CommaDelimitedList
+    Description: "Subnet IDs for worker nodes and control plane ENIs"
 
-  # Access & security
-  AllowedInboundCidrBlocks:{ Type: CommaDelimitedList }
-  AllowedSecurityGroups:   { Type: CommaDelimitedList, Default: "" }
-  AllowedWorkerRoles:      { Type: CommaDelimitedList, Default: "" }
-  EnableSSH:               { Type: String, AllowedValues: [true,false], Default: false }
+  # Extra control-plane security groups (optional)
+  AllowedSecurityGroups:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: "Additional SG IDs to attach to the cluster control plane"
+
+  # SSH to worker nodes
+  EnableSSH:
+    Type: String
+    AllowedValues: ["true","false"]
+    Default: "false"
+    Description: "Enable SSH access to EC2 nodes"
+
   SshKeyPairName:
     Type: String
     Default: ""
-    Description: "Existing EC2 key pair to enable SSH (required if EnableSSH=true)"
+    Description: "EC2 KeyPair name (required if EnableSSH = true)"
 
-  # Cluster version & API endpoint exposure
-  ClusterName:             { Type: String, Default: purple-eks }
-  ClusterVersion:          { Type: String, Default: "1.28" }
-  EnablePublicAccess:      { Type: String, AllowedValues: [true,false], Default: false }
-  EndpointPrivateAccess:   { Type: String, AllowedValues: [true,false], Default: true }
+  # Cluster identity
+  ClusterName:
+    Type: String
+    Default: purple-eks
+    Description: "EKS cluster name"
 
-  # Node-group sizing
-  NodeGroupDesiredSize:    { Type: Number, Default: 2 }
-  NodeGroupMaxSize:        { Type: Number, Default: 4 }
-  NodeGroupMinSize:        { Type: Number, Default: 1 }
-  NodeVolumeSize:          { Type: Number, Default: 50 }
-  NodeInstanceType:        { Type: String, Default: t3.medium }
+  ClusterVersion:
+    Type: String
+    Default: "1.28"
+    Description: "Kubernetes version"
 
-  # Logging & retention
-  EnableControlPlaneLogging:{ Type: String, AllowedValues: [true,false], Default: true }
-  LogRetentionDays:        { Type: Number, Default: 30 }
+  # API endpoint toggles
+  EnablePublicAccess:
+    Type: String
+    AllowedValues: ["true","false"]
+    Default: "false"
+    Description: "Make API server publicly accessible"
 
-  # Optional features
-  EnableIRSA:              { Type: String, AllowedValues: [true,false], Default: true }
-  EnableFargate:           { Type: String, AllowedValues: [true,false], Default: false }
-  EnableHybridMode:        { Type: String, AllowedValues: [true,false], Default: false }
-  EnablePodSecurityPolicy: { Type: String, AllowedValues: [true,false], Default: false }
+  EndpointPrivateAccess:
+    Type: String
+    AllowedValues: ["true","false"]
+    Default: "true"
+    Description: "Keep API server private endpoint enabled"
 
-  # SentinelOne agent install (passed to Helm)
-  S1RepositoryUsername:    { Type: String, NoEcho: true }
-  S1RepositoryPassword:    { Type: String, NoEcho: true }
-  S1SiteToken:             { Type: String, NoEcho: true }
-  S1AgentVersion:          { Type: String, Default: "24.3.3" }
-  S1AgentTag:              { Type: String, Default: "24.3.3-ga" }
-  S1AgentLogLevel:         { Type: String, Default: info }
-  S1K8sType:               { Type: String, Default: k8s }
-  InstallS1Agent:          { Type: String, AllowedValues: [true,false], Default: true }
+  # Node group sizing
+  NodeGroupMinSize:
+    Type: Number
+    Default: 1
+  NodeGroupDesiredSize:
+    Type: Number
+    Default: 2
+  NodeGroupMaxSize:
+    Type: Number
+    Default: 4
+  NodeVolumeSize:
+    Type: Number
+    Default: 50
+    Description: "Root volume size (GiB)"
+  NodeInstanceType:
+    Type: String
+    Default: t3.medium
 
-  # Tags
-  Tags:                    { Type: Json, Default: "{}" }
+  # Control-plane logging
+  EnableControlPlaneLogging:
+    Type: String
+    AllowedValues: ["true","false"]
+    Default: "true"
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+
+  # Fargate support
+  EnableFargate:
+    Type: String
+    AllowedValues: ["true","false"]
+    Default: "false"
+
+  # Where the packaged DVWA chart lives
+  HelmChartS3Url:
+    Type: String
+    Description: "S3 URL or HTTP(S) URL of the DVWA Helm chart"
 
 ###############################################################################
 # Conditions
 ###############################################################################
 Conditions:
-  UsePublicAccess:       !Equals [ !Ref EnablePublicAccess, "true" ]
-  UseIRSA:               !Equals [ !Ref EnableIRSA, "true" ]
-  UseFargate:            !Equals [ !Ref EnableFargate, "true" ]
-  UseHybrid:             !Equals [ !Ref EnableHybridMode, "true" ]
-  UsePSP:                !Equals [ !Ref EnablePodSecurityPolicy, "true" ]
-  NeedSSHKey:            !And [ !Equals [ !Ref EnableSSH, "true" ], !Not [ !Equals [ !Ref SshKeyPairName, "" ] ] ]
-  EnableCPLogs:          !Equals [ !Ref EnableControlPlaneLogging, "true" ]
+  UsePublicAccess: !Equals [ !Ref EnablePublicAccess, "true" ]
+  UsePrivateAccess: !Equals [ !Ref EndpointPrivateAccess, "true" ]
+  UseFargate:      !Equals [ !Ref EnableFargate, "true" ]
+  NeedSSHKey:      !And [ !Equals [ !Ref EnableSSH, "true" ], !Not [ !Equals [ !Ref SshKeyPairName, "" ] ] ]
+  EnableCPLogs:    !Equals [ !Ref EnableControlPlaneLogging, "true" ]
+  HasExtraSGs:     !Not   [ !Equals [ !Join ["", !Ref AllowedSecurityGroups], "" ] ]
 
 ###############################################################################
 # Resources
 ###############################################################################
-# (1) IAM – cluster & node roles
-EksClusterRole:
-  Type: AWS::IAM::Role
-  Properties:
-    AssumeRolePolicyDocument:
-      Statement: [ { Effect: Allow, Principal: { Service: eks.amazonaws.com }, Action: sts:AssumeRole } ]
-    ManagedPolicyArns:
-      - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
-      - arn:aws:iam::aws:policy/AmazonEKSVPCResourceController
-    Tags: !Ref Tags
+Resources:
 
-NodeRole:
-  Type: AWS::IAM::Role
-  Properties:
-    AssumeRolePolicyDocument:
-      Statement: [ { Effect: Allow, Principal: { Service: ec2.amazonaws.com }, Action: sts:AssumeRole } ]
-    ManagedPolicyArns:
-      - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
-      - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
-      - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
-    Tags: !Ref Tags
+  # (1) IAM role for EKS control plane
+  EksClusterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: eks.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+        - arn:aws:iam::aws:policy/AmazonEKSVPCResourceController
 
-# (2) CloudWatch log group
-EksLogGroup:
-  Condition: EnableCPLogs
-  Type: AWS::Logs::LogGroup
-  Properties:
-    LogGroupName: !Sub "/aws/eks/${ClusterName}/control-plane"
-    RetentionInDays: !Ref LogRetentionDays
-    Tags: !Ref Tags
+  # (2) IAM role for worker nodes
+  NodeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
+        - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
 
-# (3) EKS cluster
-EksCluster:
-  Type: AWS::EKS::Cluster
-  Properties:
-    Name:       !Ref ClusterName
-    Version:    !Ref ClusterVersion
-    RoleArn:    !GetAtt EksClusterRole.Arn
-    ResourcesVpcConfig:
-      SubnetIds:            !Ref SubnetIds
-      EndpointPublicAccess: !Condition UsePublicAccess
-      EndpointPrivateAccess:!Ref EndpointPrivateAccess
-      SecurityGroupIds:     !Ref AllowedSecurityGroups
-    KubernetesNetworkConfig:
-      ServiceIpv4Cidr: !Select [0, !Cidr [ !Ref VpcCidr, 1, 8 ]]
-    Logging:
-      ClusterLogging:
-        - Enabled: !Condition EnableCPLogs
-          Types: [ api, audit, authenticator, controllerManager, scheduler ]
-    Tags: !Ref Tags
+  # (3) Control-plane CloudWatch Logs group
+  EksLogGroup:
+    Condition: EnableCPLogs
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName:    !Sub "/aws/eks/${ClusterName}/control-plane"
+      RetentionInDays: !Ref LogRetentionDays
 
-# (4) OIDC provider (IRSA)
-OidcProvider:
-  Condition: UseIRSA
-  DependsOn: EksCluster
-  Type: AWS::EKS::OidcIdentityProvider
-  Properties:
-    ClusterName: !Ref EksCluster
+  # (4) The EKS cluster itself
+  EksCluster:
+    Type: AWS::EKS::Cluster
+    Properties:
+      Name:    !Ref ClusterName
+      Version: !Ref ClusterVersion
+      RoleArn: !GetAtt EksClusterRole.Arn
+      ResourcesVpcConfig:
+        SubnetIds:            !Ref SubnetIds
+        EndpointPublicAccess: !If [UsePublicAccess, true, false]
+        EndpointPrivateAccess: !If [UsePublicAccess, false, !If [UsePrivateAccess, true, false]]
+        SecurityGroupIds: !If [HasExtraSGs, !Ref AllowedSecurityGroups, !Ref "AWS::NoValue"]
+      Logging:
+        ClusterLogging:
+          - Types:
+              - api
+              - audit
+              - authenticator
+              - controllerManager
+              - scheduler
+            Enabled: !If [EnableCPLogs, true, false]
 
-# (5) Managed node group
-NodeGroup:
-  Type: AWS::EKS::Nodegroup
-  Properties:
-    ClusterName:  !Ref EksCluster
-    NodegroupName:!Sub "${ClusterName}-managed"
-    Subnets:      !Ref SubnetIds
-    NodeRole:     !GetAtt NodeRole.Arn
-    ScalingConfig:
-      MinSize:    !Ref NodeGroupMinSize
-      DesiredSize:!Ref NodeGroupDesiredSize
-      MaxSize:    !Ref NodeGroupMaxSize
-    DiskSize:     !Ref NodeVolumeSize
-    InstanceTypes:[ !Ref NodeInstanceType ]
-    RemoteAccess:
-      !If
+  # (5) Managed node group
+  NodeGroup:
+    Type: AWS::EKS::Nodegroup
+    Properties:
+      ClusterName:   !Ref EksCluster
+      NodegroupName: !Sub "${ClusterName}-managed"
+      Subnets:       !Ref SubnetIds
+      NodeRole:      !GetAtt NodeRole.Arn
+      ScalingConfig:
+        MinSize:     !Ref NodeGroupMinSize
+        DesiredSize: !Ref NodeGroupDesiredSize
+        MaxSize:     !Ref NodeGroupMaxSize
+      DiskSize:      !Ref NodeVolumeSize
+      InstanceTypes: [ !Ref NodeInstanceType ]
+      RemoteAccess: !If
         - NeedSSHKey
-        - Ec2SshKey: !Ref SshKeyPairName
-          SourceSecurityGroups: !Ref AllowedSecurityGroups
+        - { Ec2SshKey: !Ref SshKeyPairName }
         - !Ref "AWS::NoValue"
-    Tags: !Ref Tags
 
-# (6) Optional Fargate profile
-FargateProfile:
-  Condition: UseFargate
-  Type: AWS::EKS::FargateProfile
-  Properties:
-    ClusterName: !Ref EksCluster
-    FargateProfileName: !Sub "${ClusterName}-fp"
-    PodExecutionRoleArn: !GetAtt NodeRole.Arn
-    Subnets: !Ref SubnetIds
-    Selectors:
-      - Namespace: default
+  # (6) Optional Fargate profile
+  FargateProfile:
+    Condition: UseFargate
+    Type: AWS::EKS::FargateProfile
+    Properties:
+      ClusterName:         !Ref EksCluster
+      FargateProfileName:  !Sub "${ClusterName}-fp"
+      PodExecutionRoleArn: !GetAtt NodeRole.Arn
+      Subnets:             !Ref SubnetIds
+      Selectors:
+        - Namespace: default
 
-# (7) Custom resource – write aws-auth ConfigMap
-AwsAuthPatch:
-  Type: AWSQS::Kubernetes::Patch
-  Properties:
-    ClusterName: !Ref EksCluster
-    RoleArn:    !GetAtt EksClusterRole.Arn
-    Patch: |
-      apiVersion: v1
-      kind: ConfigMap
-      metadata:
-        name: aws-auth
-        namespace: kube-system
-      data:
-        mapRoles: |
-          - rolearn: {{ NodeRoleArn }}
-            username: system:node:{{EC2PrivateDNSName}}
-            groups:
-              - system:bootstrappers
-              - system:nodes
-    PatchType: Strategic
-
-# (8) DVWA Helm chart (via public HelmChart CFN type)
-DvwaHelm:
-  Type: AWSQS::EKS::HelmChart
-  DependsOn: NodeGroup
-  Properties:
-    ClusterName: !Ref EksCluster
-    Name: dvwa
-    Namespace: default
-    Repository: https://raw.githubusercontent.com/vulhub/helm-charts/master
-    Chart: dvwa
-    Version: 1.5.0
-    Wait: true
+  # cfn-lint disable=E3006
+  # (7) Helm chart installation
+  DvwaHelm:
+    Type: AWSQS::Kubernetes::Helm
+    DependsOn: NodeGroup
+    Properties:
+      ClusterName: !Ref EksCluster
+      Name:        dvwa
+      Namespace:   default
+      Chart:       !Ref HelmChartS3Url
+      Wait:        true
 
 ###############################################################################
-# Outputs – parity with Terraform
+# Outputs
 ###############################################################################
 Outputs:
-  ClusterId:                       { Value: !Ref EksCluster }
-  ClusterName:                     { Value: !Ref ClusterName }
-  ClusterEndpoint:                 { Value: !GetAtt EksCluster.Endpoint }
-  ClusterCertificateAuthorityData: { Value: !GetAtt EksCluster.CertificateAuthorityData }
+  ClusterId:
+    Value: !Ref EksCluster
 
-  EksManagedNodeGroups:            { Value: !Ref NodeGroup }
-  NodeSecurityGroupId:             { Value: !GetAtt NodeGroup.NodeSecurityGroupId }
+  ClusterName:
+    Value: !Ref ClusterName
 
-  CloudWatchLogGroupName:
-    Condition: EnableCPLogs
-    Value: !Ref EksLogGroup
-
-  OidcProviderArn:
-    Condition: UseIRSA
-    Value: !GetAtt OidcProvider.Arn
-
-  ClusterIamRoleName: { Value: !Ref EksClusterRole }
-  ClusterIamRoleArn:  { Value: !GetAtt EksClusterRole.Arn }
-
-  FargateProfiles:
-    Condition: UseFargate
-    Value: !Ref FargateProfile
+  ClusterEndpoint:
+    Value: !GetAtt EksCluster.Endpoint
 
   EksKubeconfigCommand:
-    Value: !Sub "aws eks update-kubeconfig --region ${AWS::Region} --name ${ClusterName}"
+    Value: !Sub |
+      aws eks update-kubeconfig --region ${AWS::Region} --name ${ClusterName}

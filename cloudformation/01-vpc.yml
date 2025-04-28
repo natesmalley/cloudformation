@@ -6,223 +6,260 @@ Description: >
 # Parameters – mirrors variables.tf
 ###############################################################################
 Parameters:
-  NamePrefix:                { Type: String,  Default: purple }
-  VpcCidr:                   { Type: String,  Default: 10.0.0.0/16 }
+  NamePrefix:
+    Type: String
+    Default: purple
+    Description: Prefix for all resource names
+
+  VpcCidr:
+    Type: String
+    Default: "10.0.0.0/16"
+    Description: CIDR block for the VPC
 
   PublicSubnetCidrs:
     Type: CommaDelimitedList
-    Default: 10.0.1.0/24,10.0.2.0/24
-    Description: "CIDRs for public subnets (match AZ list order)."
+    Default: "10.0.1.0/24,10.0.2.0/24"
+    Description: >-
+      Comma-delimited CIDRs for public subnets (must match AZ order).
 
   AvailabilityZones:
-    Type: CommaDelimitedList
-    Default: us-east-2a,us-east-2b
-    Description: "AZs for each public subnet."
+    Type: List<AWS::EC2::AvailabilityZone::Name>
+    Default:  "us-east-2a,us-east-2b"
+    Description: Two AZ names for the public subnets
 
-  CreateIgw:                 { Type: String, AllowedValues: [true,false], Default: true }
+  CreateIgw:
+    Type: String
+    AllowedValues: ["true","false"]
+    Default: "true"
+    Description: Whether to create an Internet Gateway
 
-  EnableFlowLogs:            { Type: String, AllowedValues: [true,false], Default: true }
-  FlowLogsRetentionDays:     { Type: Number, Default: 30 }
+  EnableFlowLogs:
+    Type: String
+    AllowedValues: ["true","false"]
+    Default: "true"
+    Description: Whether to enable VPC Flow Logs
 
-  EnableDnsHostnames:        { Type: String, AllowedValues: [true,false], Default: true }
-  EnableDnsSupport:          { Type: String, AllowedValues: [true,false], Default: true }
+  FlowLogsRetentionDays:
+    Type: Number
+    Default: 30
+    Description: Retention days for VPC Flow Logs
+
+  EnableDnsHostnames:
+    Type: String
+    AllowedValues: ["true","false"]
+    Default: "true"
+    Description: Whether to enable DNS hostnames in the VPC
+
+  EnableDnsSupport:
+    Type: String
+    AllowedValues: ["true","false"]
+    Default: "true"
+    Description: Whether to enable DNS support in the VPC
 
   ClusterName:
     Type: String
     Default: ""
-    Description: "When supplied, adds kubernetes.io tags to subnets."
-
-  Tags:
-    Type: Json
-    Default: "{}"
-    Description: "Free-form tag map merged onto every resource."
+    Description: >-
+      If non-empty, will apply the
+      kubernetes.io/cluster/<ClusterName>=shared tag to the VPC & subnets.
 
 ###############################################################################
 # Conditions
 ###############################################################################
 Conditions:
-  UseFlowLogs:    !Equals [ !Ref EnableFlowLogs, "true" ]
-  HasClusterName: !Not   [ !Equals [ !Ref ClusterName, "" ] ]
   CreateIgwCond:  !Equals [ !Ref CreateIgw, "true" ]
+  UseFlowLogs:    !Equals [ !Ref EnableFlowLogs, "true" ]
+  HasClusterName: !Not    [ !Equals [ !Ref ClusterName, "" ] ]
 
 ###############################################################################
 # Resources
 ###############################################################################
+Resources:
 
-# VPC
-VPC:
-  Type: AWS::EC2::VPC
-  Properties:
-    CidrBlock: !Ref VpcCidr
-    EnableDnsHostnames: !Ref EnableDnsHostnames
-    EnableDnsSupport:   !Ref EnableDnsSupport
-    Tags:
-      - Key: Name
-        Value: !Sub "${NamePrefix}-vpc"
-      - Fn::If:
-        - HasClusterName
-        - { Key: !Sub "kubernetes.io/cluster/${ClusterName}", Value: shared }
-        - { Ref: "AWS::NoValue" }
-      - Fn::ImportValue: !Ref Tags   # merges caller-supplied tag map
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock:        !Ref VpcCidr
+      EnableDnsHostnames: !Ref EnableDnsHostnames
+      EnableDnsSupport:   !Ref EnableDnsSupport
+      Tags:
+        - Key: Name
+          Value: !Sub "${NamePrefix}-vpc"
+        - Fn::If:
+            - HasClusterName
+            - Key: !Sub "kubernetes.io/cluster/${ClusterName}"
+              Value: shared
+            - Ref: AWS::NoValue
 
-# Internet Gateway (optional) + attachment
-InternetGateway:
-  Condition: CreateIgwCond
-  Type: AWS::EC2::InternetGateway
+  InternetGateway:
+    Condition: CreateIgwCond
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "${NamePrefix}-igw"
 
-IgwAttachment:
-  Condition: CreateIgwCond
-  Type: AWS::EC2::VPCGatewayAttachment
-  Properties:
-    VpcId: !Ref VPC
-    InternetGatewayId: !Ref InternetGateway
+  IgwAttachment:
+    Condition: CreateIgwCond
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId:             !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
 
-# --------------------------------------------------------------------------------
-# Public subnets – two by default (expand for more)
-# --------------------------------------------------------------------------------
-PublicSubnet0:
-  Type: AWS::EC2::Subnet
-  Properties:
-    VpcId:            !Ref VPC
-    CidrBlock:        !Select [0, !Ref PublicSubnetCidrs]
-    AvailabilityZone: !Select [0, !Ref AvailabilityZones]
-    MapPublicIpOnLaunch: !Condition CreateIgwCond
-    Tags:
-      - Key: Name
-        Value: !Sub "${NamePrefix}-public-subnet-1"
-      - Fn::If:
-        - HasClusterName
-        - { Key: !Sub "kubernetes.io/cluster/${ClusterName}", Value: shared }
-        - { Ref: "AWS::NoValue" }
-      - Fn::ImportValue: !Ref Tags
+  PublicSubnet0:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId:               !Ref VPC
+      CidrBlock:           !Select [ 0, !Ref PublicSubnetCidrs ]
+      AvailabilityZone:    !Select [ 0, !Ref AvailabilityZones ]
+      MapPublicIpOnLaunch: !If [ CreateIgwCond, true, false ]
+      Tags:
+        - Key: Name
+          Value: !Sub "${NamePrefix}-public-subnet-1"
+        - Fn::If:
+            - HasClusterName
+            - Key: !Sub "kubernetes.io/cluster/${ClusterName}"
+              Value: shared
+            - Ref: AWS::NoValue
 
-PublicSubnet1:
-  Type: AWS::EC2::Subnet
-  Properties:
-    VpcId:            !Ref VPC
-    CidrBlock:        !Select [1, !Ref PublicSubnetCidrs]
-    AvailabilityZone: !Select [1, !Ref AvailabilityZones]
-    MapPublicIpOnLaunch: !Condition CreateIgwCond
-    Tags:
-      - Key: Name
-        Value: !Sub "${NamePrefix}-public-subnet-2"
-      - Fn::If:
-        - HasClusterName
-        - { Key: !Sub "kubernetes.io/cluster/${ClusterName}", Value: shared }
-        - { Ref: "AWS::NoValue" }
-      - Fn::ImportValue: !Ref Tags
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId:               !Ref VPC
+      CidrBlock:           !Select [ 1, !Ref PublicSubnetCidrs ]
+      AvailabilityZone:    !Select [ 1, !Ref AvailabilityZones ]
+      MapPublicIpOnLaunch: !If [ CreateIgwCond, true, false ]
+      Tags:
+        - Key: Name
+          Value: !Sub "${NamePrefix}-public-subnet-2"
+        - Fn::If:
+            - HasClusterName
+            - Key: !Sub "kubernetes.io/cluster/${ClusterName}"
+              Value: shared
+            - Ref: AWS::NoValue
 
-# Public route table + default route (conditional on IGW)
-PublicRouteTable:
-  Type: AWS::EC2::RouteTable
-  Properties:
-    VpcId: !Ref VPC
-    Tags:
-      - Key: Name
-        Value: !Sub "${NamePrefix}-public-rt"
-      - Fn::ImportValue: !Ref Tags
+  PublicRouteTable:
+    Condition: CreateIgwCond
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${NamePrefix}-public-rt"
 
-PublicRoute:
-  Condition: CreateIgwCond
-  Type: AWS::EC2::Route
-  DependsOn: IgwAttachment
-  Properties:
-    RouteTableId: !Ref PublicRouteTable
-    DestinationCidrBlock: 0.0.0.0/0
-    GatewayId: !Ref InternetGateway
+  PublicRoute:
+    Condition: CreateIgwCond
+    Type: AWS::EC2::Route
+    DependsOn: IgwAttachment
+    Properties:
+      RouteTableId:         !Ref PublicRouteTable
+      DestinationCidrBlock: "0.0.0.0/0"
+      GatewayId:            !Ref InternetGateway
 
-RtAssoc0:
-  Type: AWS::EC2::RouteTableAssociation
-  Properties:
-    SubnetId:     !Ref PublicSubnet0
-    RouteTableId: !Ref PublicRouteTable
+  RtAssoc0:
+    Condition: CreateIgwCond
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId:     !Ref PublicSubnet0
+      RouteTableId: !Ref PublicRouteTable
 
-RtAssoc1:
-  Type: AWS::EC2::RouteTableAssociation
-  Properties:
-    SubnetId:     !Ref PublicSubnet1
-    RouteTableId: !Ref PublicRouteTable
+  RtAssoc1:
+    Condition: CreateIgwCond
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId:     !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
 
-# --------------------------------------------------------------------------------
-# Optional VPC Flow Logs
-# --------------------------------------------------------------------------------
-FlowLogGroup:
-  Condition: UseFlowLogs
-  Type: AWS::Logs::LogGroup
-  Properties:
-    LogGroupName: !Sub "/aws/vpc/${NamePrefix}-flow-logs-${AWS::StackName}"
-    RetentionInDays: !Ref FlowLogsRetentionDays
-    Tags: !ImportValue Tags
+  FlowLogGroup:
+    Condition: UseFlowLogs
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName:    !Sub "/aws/vpc/${NamePrefix}-flow-logs-${AWS::StackName}"
+      RetentionInDays: !Ref FlowLogsRetentionDays
 
-FlowLogRole:
-  Condition: UseFlowLogs
-  Type: AWS::IAM::Role
-  Properties:
-    AssumeRolePolicyDocument:
-      Version: "2012-10-17"
-      Statement:
-        - Effect: Allow
-          Principal: { Service: vpc-flow-logs.amazonaws.com }
-          Action: sts:AssumeRole
-    Path: /
-    Tags: !ImportValue Tags
+  FlowLogRole:
+    Condition: UseFlowLogs
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - vpc-flow-logs.amazonaws.com
+            Action: sts:AssumeRole
+      Path: "/"
 
-FlowLogRolePolicy:
-  Condition: UseFlowLogs
-  Type: AWS::IAM::Policy
-  Properties:
-    PolicyName: !Sub "${NamePrefix}-flow-log-policy"
-    Roles: [ !Ref FlowLogRole ]
-    PolicyDocument:
-      Version: "2012-10-17"
-      Statement:
-        - Effect: Allow
-          Action:
-            - logs:CreateLogGroup
-            - logs:CreateLogStream
-            - logs:PutLogEvents
-          Resource: "*"
+  FlowLogRolePolicy:
+    Condition: UseFlowLogs
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub "${NamePrefix}-flow-log-policy"
+      Roles:
+        - !Ref FlowLogRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: "*"
 
-VpcFlowLog:
-  Condition: UseFlowLogs
-  Type: AWS::EC2::FlowLog
-  Properties:
-    ResourceType: VPC
-    ResourceId:   !Ref VPC
-    TrafficType:  ALL
-    LogDestinationType: cloud-watch-logs
-    LogGroupName: !Ref FlowLogGroup
-    DeliverLogsPermissionArn: !GetAtt FlowLogRole.Arn
-    Tags:
-      - Key: Name
-        Value: !Sub "${NamePrefix}-flow-log"
-      - Fn::ImportValue: !Ref Tags
+  VpcFlowLog:
+    Condition: UseFlowLogs
+    Type: AWS::EC2::FlowLog
+    Properties:
+      ResourceType:           VPC
+      ResourceId:             !Ref VPC
+      TrafficType:            ALL
+      LogDestinationType:     cloud-watch-logs
+      LogDestination:         !GetAtt FlowLogGroup.Arn
+      DeliverLogsPermissionArn: !GetAtt FlowLogRole.Arn
+      Tags:
+        - Key: Name
+          Value: !Sub "${NamePrefix}-flow-log"
 
 ###############################################################################
 # Outputs – full parity with outputs.tf
 ###############################################################################
 Outputs:
   VpcId:
+    Description: "VPC ID"
     Value: !Ref VPC
-    Export: { Name: !Sub "${AWS::StackName}-VpcId" }
+    Export:
+      Name: !Sub "${AWS::StackName}-VpcId"
 
   VpcCidr:
+    Description: "VPC CIDR"
     Value: !Ref VpcCidr
-    Export: { Name: !Sub "${AWS::StackName}-VpcCidr" }
+    Export:
+      Name: !Sub "${AWS::StackName}-VpcCidr"
 
   PublicSubnetIds:
-    Value: !Join [",", [ !Ref PublicSubnet0, !Ref PublicSubnet1 ]]
-    Export: { Name: !Sub "${AWS::StackName}-PublicSubnetIds" }
+    Description: "Public Subnet IDs"
+    Value: !Join [ ",", [ !Ref PublicSubnet0, !Ref PublicSubnet1 ] ]
+    Export:
+      Name: !Sub "${AWS::StackName}-PublicSubnetIds"
 
   PublicSubnetCidrs:
-    Value: !Join [",", !Ref PublicSubnetCidrs]
-    Export: { Name: !Sub "${AWS::StackName}-PublicSubnetCidrs" }
+    Description: "Public Subnet CIDRs"
+    Value: !Join [ ",", !Ref PublicSubnetCidrs ]
+    Export:
+      Name: !Sub "${AWS::StackName}-PublicSubnetCidrs"
 
   InternetGatewayId:
     Condition: CreateIgwCond
+    Description: "Internet Gateway ID"
     Value: !Ref InternetGateway
-    Export: { Name: !Sub "${AWS::StackName}-InternetGatewayId" }
+    Export:
+      Name: !Sub "${AWS::StackName}-InternetGatewayId"
 
   PublicRouteTableId:
+    Condition: CreateIgwCond
+    Description: "Public Route Table ID"
     Value: !Ref PublicRouteTable
-    Export: { Name: !Sub "${AWS::StackName}-PublicRouteTableId" }
+    Export:
+      Name: !Sub "${AWS::StackName}-PublicRouteTableId"

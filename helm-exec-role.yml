@@ -1,0 +1,22 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: IAM execution role for CloudFormation’s Helm provider
+
+Resources:
+  CFNRegistryHelmExecRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: CFN-Registry-HelmExecRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudformation.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+
+Outputs:
+  RoleArn:
+    Description: ARN of the exec role for Helm provider
+    Value: !GetAtt CFNRegistryHelmExecRole.Arn

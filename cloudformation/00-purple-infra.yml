@@ -77,7 +77,7 @@ EksStack:
       ClusterName:   !Ref ClusterName
       EnablePublicAccess: !Ref EnablePublicAccess
       EnableSSH:     !Ref EnableSSH
-      SshKeyPairName:!Ref SshKeyPairName
+      SshKeyPairName: !Ref SshKeyPairName
       AllowedInboundCidrBlocks: !Ref DvwaAllowedCidr
       Tags:          !Ref Tags
     Capabilities: [CAPABILITY_IAM, CAPABILITY_NAMED_IAM, CAPABILITY_AUTO_EXPAND]

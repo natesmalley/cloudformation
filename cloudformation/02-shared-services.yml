@@ -27,67 +27,72 @@ Parameters:
 # Conditions
 ###############################################################################
 Conditions:
-  HasAllowedCidr:      !Not [ !Equals [ !Join ["", !Ref AllowedInboundCidrBlocks], "" ] ]
-  HasOffSecIps:        !Not [ !Equals [ !Join ["", !Ref OffensiveSecurityAccess], "" ] ]
+  HasAllowedCidr: !Not [ !Equals [ !Join ["", !Ref AllowedInboundCidrBlocks], "" ] ]
+  HasOffSecIps:   !Not [ !Equals [ !Join ["", !Ref OffensiveSecurityAccess], "" ] ]
 
 ###############################################################################
 # Resources
 ###############################################################################
-VulnerableBucket:
-  Type: AWS::S3::Bucket
-  Properties:
-    BucketName: !Ref BucketName
-    VersioningConfiguration: { Status: Enabled }
-    BucketEncryption:
-      ServerSideEncryptionConfiguration:
-        - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
-    PublicAccessBlockConfiguration:
-      BlockPublicAcls: true
-      BlockPublicPolicy: true
-      RestrictPublicBuckets: true
-    Tags:
-      - Key: Environment
-        Value: !Ref Environment
-      - Key: Name
-        Value: !Ref BucketName
+Resources:
+  VulnerableBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref BucketName
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Name
+          Value: !Ref BucketName
 
-# -----------------------  Bucket Policy (IP-based allow) ----------------------
-VulnerableBucketPolicy:
-  Type: AWS::S3::BucketPolicy
-  Properties:
-    Bucket: !Ref VulnerableBucket
-    PolicyDocument:
-      Version: "2012-10-17"
-      Statement:
-        # Allow GetObject ONLY from whitelisted CIDRs / IPs (if supplied)
-        - Sid: AllowWhitelistedIPs
-          Effect: Allow
-          Principal: "*"
-          Action: "s3:GetObject"
-          Resource: !Sub "${VulnerableBucket.Arn}/*"
-          Condition:
-            IpAddress:
-              "aws:SourceIp":
-                !If
-                # merge the two lists; CloudFormation needs a literal list
-                - HasAllowedCidr
-                - !If
-                  - HasOffSecIps
-                  - !Split [ ",", !Join [ ",", [ !Join [ ",", !Ref AllowedInboundCidrBlocks ], !Join [ ",", !Ref OffensiveSecurityAccess ] ] ] ]
-                  - !Ref AllowedInboundCidrBlocks
-                - !If
-                  - HasOffSecIps
-                  - !Ref OffensiveSecurityAccess
-                  - [ "0.0.0.0/32" ]   # dummy, never matched, keeps policy valid
+  VulnerableBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref VulnerableBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowWhitelistedIPs
+            Effect: Allow
+            Principal: "*"
+            Action: "s3:GetObject"
+            Resource: !Sub "${VulnerableBucket.Arn}/*"
+            Condition:
+              IpAddress:
+                "aws:SourceIp":
+                  !If
+                    - HasAllowedCidr
+                    - !If
+                      - HasOffSecIps
+                      - !Split 
+                        - ","
+                        - !Join 
+                          - ","
+                          - - !Join [ ",", !Ref AllowedInboundCidrBlocks ]
+                            - !Join [ ",", !Ref OffensiveSecurityAccess ]
+                      - !Ref AllowedInboundCidrBlocks
+                    - !If
+                      - HasOffSecIps
+                      - !Ref OffensiveSecurityAccess
+                      - [ "0.0.0.0/32" ]
 
-        # Deny non-TLS (safety net)
-        - Sid: DenyInsecureTransport
-          Effect: Deny
-          Principal: "*"
-          Action: "s3:*"
-          Resource: !Sub "${VulnerableBucket.Arn}/*"
-          Condition:
-            Bool: { "aws:SecureTransport": false }
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource: !Sub "${VulnerableBucket.Arn}/*"
+            Condition:
+              Bool:
+                "aws:SecureTransport": false
 
 ###############################################################################
 # Outputs – parity with outputs.tf
@@ -96,14 +101,17 @@ Outputs:
   BucketName:
     Description: "Name of the created S3 bucket"
     Value: !Ref VulnerableBucket
-    Export: { Name: !Sub "${AWS::StackName}-BucketName" }
+    Export:
+      Name: !Sub "${AWS::StackName}-BucketName"
 
   BucketArn:
     Description: "ARN of the created S3 bucket"
     Value: !GetAtt VulnerableBucket.Arn
-    Export: { Name: !Sub "${AWS::StackName}-BucketArn" }
+    Export:
+      Name: !Sub "${AWS::StackName}-BucketArn"
 
   BucketRegion:
     Description: "Region where the bucket is created"
     Value: !Ref "AWS::Region"
-    Export: { Name: !Sub "${AWS::StackName}-BucketRegion" }
+    Export:
+      Name: !Sub "${AWS::StackName}-BucketRegion"

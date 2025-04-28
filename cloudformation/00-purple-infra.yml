@@ -29,6 +29,9 @@ Parameters:
   EnablePublicAccess: { Type: String, AllowedValues: [true,false], Default: false }
   EnableSSH:          { Type: String, AllowedValues: [true,false], Default: false }
   SshKeyPairName:     { Type: String,  Default: "" }
+  HelmChartS3Url:
+    Type: String
+    Description: "S3 URL or HTTP(S) URL of the packaged DVWA Helm chart"
 
   # ─── DVWA EC2 ──────────────────────────────────────────────────────────────
   DvwaInstanceCount:  { Type: Number, Default: 1 }
@@ -62,7 +65,6 @@ SharedStack:
       Environment:               !Ref Environment
       AllowedInboundCidrBlocks:  0.0.0.0/0
       OffensiveSecurityAccess:   !Ref OffSecIps
-      Tags:                      !Ref Tags
 
 # 3️⃣  EKS
 EksStack:
@@ -71,15 +73,12 @@ EksStack:
   Properties:
     TemplateURL: ./03-eks.yml
     Parameters:
-      VpcId:         !GetAtt VpcStack.Outputs.VpcId
-      VpcCidr:       !GetAtt VpcStack.Outputs.VpcCidr
       SubnetIds:     !GetAtt VpcStack.Outputs.PublicSubnetIds
       ClusterName:   !Ref ClusterName
       EnablePublicAccess: !Ref EnablePublicAccess
       EnableSSH:     !Ref EnableSSH
       SshKeyPairName: !Ref SshKeyPairName
-      AllowedInboundCidrBlocks: !Ref DvwaAllowedCidr
-      Tags:          !Ref Tags
+      HelmChartS3Url: !Ref HelmChartS3Url
     Capabilities: [CAPABILITY_IAM, CAPABILITY_NAMED_IAM, CAPABILITY_AUTO_EXPAND]
 
 # 4️⃣  DVWA EC2 demo
@@ -93,7 +92,6 @@ DvwaStack:
       SubnetIds:     !GetAtt VpcStack.Outputs.PublicSubnetIds
       InstanceCount: !Ref DvwaInstanceCount
       AllowedInboundCidrBlocks: !Ref DvwaAllowedCidr
-      Tags:          !Ref Tags
     Capabilities: [CAPABILITY_IAM]
 
 # 5️⃣  CloudTrail (optional – comment this out if you disabled it)
@@ -104,7 +102,6 @@ CloudTrailStack:
     TemplateURL: ./05-cloudtrail.yml
     Parameters:
       NamePrefix: purple
-      Tags:       !Ref Tags
     Capabilities: [CAPABILITY_IAM, CAPABILITY_NAMED_IAM]
 
 ###############################################################################

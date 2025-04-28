@@ -7,163 +7,160 @@ Description: >
 ###############################################################################
 Parameters:
   NamePrefix:                  { Type: String,  Default: purple }
-  Tags:                        { Type: Json,    Default: "{}" }
 
-  ForceDestroyBucket:          { Type: String, AllowedValues: [true,false], Default: false }
+  ForceDestroyBucket:          { Type: String, AllowedValues: ["true","false"], Default: "false" }
   LogRetentionDays:            { Type: Number,  Default: 30 }
 
-  EnableLogFileValidation:     { Type: String, AllowedValues: [true,false], Default: true }
-  IncludeGlobalServiceEvents:  { Type: String, AllowedValues: [true,false], Default: true }
-  IsMultiRegionTrail:          { Type: String, AllowedValues: [true,false], Default: true }
-  EnableInsights:              { Type: String, AllowedValues: [true,false], Default: true }
+  EnableLogFileValidation:     { Type: String, AllowedValues: ["true","false"], Default: "true" }
+  IncludeGlobalServiceEvents:  { Type: String, AllowedValues: ["true","false"], Default: "true" }
+  IsMultiRegionTrail:          { Type: String, AllowedValues: ["true","false"], Default: "true" }
+  EnableInsights:              { Type: String, AllowedValues: ["true","false"], Default: "true" }
 
   KmsKeyDeletionWindow:        { Type: Number,  Default: 7 }
 
-  EnableS3Logging:             { Type: String, AllowedValues: [true,false], Default: true }
-  EnableLambdaLogging:         { Type: String, AllowedValues: [true,false], Default: true }
+  EnableS3Logging:             { Type: String, AllowedValues: ["true","false"], Default: "true" }
+  EnableLambdaLogging:         { Type: String, AllowedValues: ["true","false"], Default: "true" }
 
-  IsOrganizationTrail:         { Type: String, AllowedValues: [true,false], Default: false }
+  IsOrganizationTrail:         { Type: String, AllowedValues: ["true","false"], Default: "false" }
 
 ###############################################################################
 # Conditions
 ###############################################################################
 Conditions:
-  UseInsights:         !Equals [ !Ref EnableInsights, true ]
-  UseS3DataEvents:     !Equals [ !Ref EnableS3Logging, true ]
-  UseLambdaDataEvents: !Equals [ !Ref EnableLambdaLogging, true ]
-  OrgTrail:            !Equals [ !Ref IsOrganizationTrail, true ]
-  ForceDeleteBucket:   !Equals [ !Ref ForceDestroyBucket, true ]
+  UseInsights:         !Equals [ !Ref EnableInsights, "true" ]
+  UseS3DataEvents:     !Equals [ !Ref EnableS3Logging, "true" ]
+  UseLambdaDataEvents: !Equals [ !Ref EnableLambdaLogging, "true" ]
+  OrgTrail:            !Equals [ !Ref IsOrganizationTrail, "true" ]
+  ForceDeleteBucket:   !Equals [ !Ref ForceDestroyBucket, "true" ]
+  UseCloudTrailLogging: !Equals [ !Ref EnableS3Logging, "true" ]
 
 ###############################################################################
 # Resources
 ###############################################################################
-CloudTrailKey:
-  Type: AWS::KMS::Key
-  Properties:
-    EnableKeyRotation: true
-    PendingWindowInDays: !Ref KmsKeyDeletionWindow
-    KeyPolicy:
-      Version: "2012-10-17"
-      Statement:
-        - Sid: AllowRoot
-          Effect: Allow
-          Principal: { AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root" }
-          Action: "kms:*"
-          Resource: "*"
-        - Sid: AllowCloudTrail
-          Effect: Allow
-          Principal: { Service: cloudtrail.amazonaws.com }
-          Action:
-            - kms:GenerateDataKey*
-            - kms:Decrypt
-          Resource: "*"
-          Condition:
-            StringEquals:
-              kms:EncryptionContext:aws:cloudtrail:arn: !Sub "arn:aws:cloudtrail:${AWS::Region}:${AWS::AccountId}:trail/*"
-    Tags: !Ref Tags
+Resources:
+  CloudTrailKey:
+    Type: AWS::KMS::Key
+    Properties:
+      EnableKeyRotation: true
+      PendingWindowInDays: !Ref KmsKeyDeletionWindow
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowRoot
+            Effect: Allow
+            Principal: { AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root" }
+            Action: "kms:*"
+            Resource: "*"
+          - Sid: AllowCloudTrail
+            Effect: Allow
+            Principal: { Service: cloudtrail.amazonaws.com }
+            Action:
+              - kms:GenerateDataKey*
+              - kms:Decrypt
+            Resource: "*"
+            Condition:
+              StringEquals:
+                kms:EncryptionContext:aws:cloudtrail:arn: !Sub "arn:aws:cloudtrail:${AWS::Region}:${AWS::AccountId}:trail/*"
 
-CloudTrailBucket:
-  Type: AWS::S3::Bucket
-  DeletionPolicy: !If [ ForceDeleteBucket, Delete, Retain ]
-  Properties:
-    BucketName: !Sub "${NamePrefix}-cloudtrail-${AWS::AccountId}-${AWS::Region}"
-    VersioningConfiguration: { Status: Enabled }
-    BucketEncryption:
-      ServerSideEncryptionConfiguration:
-        - ServerSideEncryptionByDefault:
-            SSEAlgorithm: aws:kms
-            KMSMasterKeyID: !Ref CloudTrailKey
-    PublicAccessBlockConfiguration:
-      BlockPublicAcls: true
-      BlockPublicPolicy: true
-      RestrictPublicBuckets: true
-    Tags: !Ref Tags
+  CloudTrailBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: !If [ ForceDeleteBucket, Delete, Retain ]
+    UpdateReplacePolicy: !If [ ForceDeleteBucket, Delete, Retain ]
+    Properties:
+      BucketName: !Sub "${NamePrefix}-cloudtrail-${AWS::AccountId}-${AWS::Region}"
+      VersioningConfiguration: { Status: Enabled }
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref CloudTrailKey
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
 
-LogBucketPolicy:
-  Type: AWS::S3::BucketPolicy
-  Properties:
-    Bucket: !Ref CloudTrailBucket
-    PolicyDocument:
-      Version: "2012-10-17"
-      Statement:
-        - Effect: Deny
-          Principal: "*"
-          Action: "s3:PutObject"
-          Resource: !Sub "${CloudTrailBucket.Arn}/*"
-          Condition:
-            StringNotEquals: { "s3:x-amz-server-side-encryption": "aws:kms" }
-        - Effect: Deny
-          Principal: "*"
-          Action: "s3:*"
-          Resource: !Sub "${CloudTrailBucket.Arn}/*"
-          Condition: { Bool: { "aws:SecureTransport": false } }
+  LogBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref CloudTrailBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Deny
+            Principal: "*"
+            Action: "s3:PutObject"
+            Resource: !Sub "${CloudTrailBucket.Arn}/*"
+            Condition:
+              StringNotEquals: { "s3:x-amz-server-side-encryption": "aws:kms" }
+          - Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource: !Sub "${CloudTrailBucket.Arn}/*"
+            Condition: { Bool: { "aws:SecureTransport": false } }
 
-TrailLogGroup:
-  Type: AWS::Logs::LogGroup
-  Properties:
-    LogGroupName: !Sub "/aws/cloudtrail/${NamePrefix}"
-    RetentionInDays: !Ref LogRetentionDays
-    Tags: !Ref Tags
+  TrailLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/cloudtrail/${NamePrefix}"
+      RetentionInDays: !Ref LogRetentionDays
 
-CloudTrailCWRole:
-  Type: AWS::IAM::Role
-  Properties:
-    AssumeRolePolicyDocument:
-      Statement:
-        - Effect: Allow
-          Principal: { Service: cloudtrail.amazonaws.com }
-          Action: sts:AssumeRole
-    Policies:
-      - PolicyName: PublishCW
-        PolicyDocument:
-          Statement:
-            - Effect: Allow
-              Action:
-                - logs:CreateLogStream
-                - logs:PutLogEvents
-              Resource: !Sub "${TrailLogGroup.Arn}:*"
-    Tags: !Ref Tags
+  CloudTrailCWRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: { Service: cloudtrail.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: PublishCW
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "${TrailLogGroup.Arn}:*"
 
-CloudTrailTopic:
-  Type: AWS::SNS::Topic
-  Properties:
-    TopicName: !Sub "${NamePrefix}-cloudtrail"
-    KmsMasterKeyId: !Ref CloudTrailKey
-    Tags: !Ref Tags
+  CloudTrailTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${NamePrefix}-cloudtrail"
+      KmsMasterKeyId: !Ref CloudTrailKey
 
-CloudTrail:
-  Type: AWS::CloudTrail::Trail
-  Properties:
-    TrailName: !Sub "${NamePrefix}-trail"
-    IsOrganizationTrail: !Condition OrgTrail
-    IsMultiRegionTrail: !Ref IsMultiRegionTrail
-    IncludeGlobalServiceEvents: !Ref IncludeGlobalServiceEvents
-    EnableLogFileValidation: !Ref EnableLogFileValidation
-    KMSKeyId: !Ref CloudTrailKey
-    S3BucketName: !Ref CloudTrailBucket
-    CloudWatchLogsLogGroupArn: !GetAtt TrailLogGroup.Arn
-    CloudWatchLogsRoleArn: !GetAtt CloudTrailCWRole.Arn
-    SnsTopicName: !Ref CloudTrailTopic
-    InsightSelectors:
-      !If [ UseInsights, [ { InsightType: ApiCallRateInsight } ], !Ref "AWS::NoValue" ]
-    EventSelectors:
-      - ReadWriteType: All
-        IncludeManagementEvents: true
-      - !If
-        - UseS3DataEvents
-        - DataResources:
-            - Type: AWS::S3::Object
-              Values: [ !Sub "${CloudTrailBucket.Arn}/" ]
-          ReadWriteType: All
-        - !Ref "AWS::NoValue"
-      - !If
-        - UseLambdaDataEvents
-        - DataResources:
-            - Type: AWS::Lambda::Function
-              Values: [ !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:*" ]
-          ReadWriteType: All
-        - !Ref "AWS::NoValue"
-    Tags: !Ref Tags
+  CloudTrail:
+    Type: AWS::CloudTrail::Trail
+    Properties:
+      TrailName: !Sub "${NamePrefix}-trail"
+      IsOrganizationTrail: !If [ OrgTrail, true, false ]
+      IsMultiRegionTrail: !Ref IsMultiRegionTrail
+      IncludeGlobalServiceEvents: !Ref IncludeGlobalServiceEvents
+      EnableLogFileValidation: !Ref EnableLogFileValidation
+      KMSKeyId: !Ref CloudTrailKey
+      S3BucketName: !Ref CloudTrailBucket
+      CloudWatchLogsLogGroupArn: !GetAtt TrailLogGroup.Arn
+      CloudWatchLogsRoleArn: !GetAtt CloudTrailCWRole.Arn
+      SnsTopicName: !Ref CloudTrailTopic
+      IsLogging: !If [ UseCloudTrailLogging, true, false ]
+      InsightSelectors:
+        !If [ UseInsights, [ { InsightType: ApiCallRateInsight } ], !Ref "AWS::NoValue" ]
+      EventSelectors:
+        - ReadWriteType: All
+          IncludeManagementEvents: true
+        - !If
+          - UseS3DataEvents
+          - DataResources:
+              - Type: AWS::S3::Object
+                Values: [ !Sub "${CloudTrailBucket.Arn}/" ]
+            ReadWriteType: All
+          - !Ref "AWS::NoValue"
+        - !If
+          - UseLambdaDataEvents
+          - DataResources:
+              - Type: AWS::Lambda::Function
+                Values: [ !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:*" ]
+            ReadWriteType: All
+          - !Ref "AWS::NoValue"
 
 ###############################################################################
 # Outputs

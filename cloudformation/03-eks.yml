@@ -160,13 +160,13 @@ Resources:
         SecurityGroupIds: !If [HasExtraSGs, !Ref AllowedSecurityGroups, !Ref "AWS::NoValue"]
       Logging:
         ClusterLogging:
-          - Types:
+          - Enabled: !If [EnableCPLogs, true, false]
+            Types:
               - api
               - audit
               - authenticator
               - controllerManager
               - scheduler
-            Enabled: !If [EnableCPLogs, true, false]
 
   # (5) Managed node group
   NodeGroup:
@@ -199,8 +199,6 @@ Resources:
       Selectors:
         - Namespace: default
 
-  # cfn-lint disable=E3006
-  # (7) Helm chart installation
   DvwaHelm:
     Type: AWSQS::Kubernetes::Helm
     DependsOn: NodeGroup

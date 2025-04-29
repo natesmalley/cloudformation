@@ -6,8 +6,6 @@ CloudFormation parent stack plus a Helm chart.
 
 ## Repository layout
 
-```text
-.
 ├─ cloudformation/            # 00-05 nested-stack templates
 │   ├─ 00-purple-infra.yml    # parent orchestration stack
 │   ├─ 01-vpc.yml             # VPC + flow logs

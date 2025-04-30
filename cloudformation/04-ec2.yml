@@ -1,110 +1,81 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  Purple – Shared-services S3 bucket (converted 1-for-1 from Terraform).
+  Purple – EC2 Two-Node Setup.
 
-###############################################################################
-# Parameters – mirrors variables.tf
-###############################################################################
 Parameters:
-  BucketName:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: "VPC to launch instances in"
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: "Two public subnets"
+  InstanceType:
     Type: String
-    Description: "Name of the S3 bucket"
-  Environment:
-    Type: String
-    Description: "Environment name (e.g., dev, prod)"
+    Default: t3.medium
+    AllowedValues:
+      - t3.micro
+      - t3.small
+      - t3.medium
+      - t3.large
+    Description: "EC2 instance type"
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: "SSH key pair name"
+  AmiId:
+    Type: AWS::EC2::Image::Id
+    Description: "AMI ID to use"
 
-  AllowedInboundCidrBlocks:
-    Type: CommaDelimitedList
-    Default: ""
-    Description: "CIDR blocks allowed GetObject access (optional)"
-
-  OffensiveSecurityAccess:
-    Type: CommaDelimitedList
-    Default: ""
-    Description: "IP addresses for offensive-security teams (optional)"
-
-###############################################################################
-# Conditions
-###############################################################################
-Conditions:
-  HasAllowedCidr:      !Not [ !Equals [ !Join ["", !Ref AllowedInboundCidrBlocks], "" ] ]
-  HasOffSecIps:        !Not [ !Equals [ !Join ["", !Ref OffensiveSecurityAccess], "" ] ]
-
-###############################################################################
-# Resources
-###############################################################################
 Resources:
-  VulnerableBucket:
-    Type: AWS::S3::Bucket
+  NodeSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
     Properties:
-      BucketName: !Ref BucketName
-      VersioningConfiguration: { Status: Enabled }
-      BucketEncryption:
-        ServerSideEncryptionConfiguration:
-          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
-      PublicAccessBlockConfiguration:
-        BlockPublicAcls: true
-        BlockPublicPolicy: true
-        RestrictPublicBuckets: true
+      GroupDescription: "Security group for two EC2 nodes allowing SSH"
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+
+  Node0:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      ImageId: !Ref AmiId
+      SubnetId: !Select [ 0, !Ref SubnetIds ]
+      SecurityGroupIds: [ !Ref NodeSecurityGroup ]
       Tags:
-        - Key: Environment
-          Value: !Ref Environment
         - Key: Name
-          Value: !Ref BucketName
+          Value: !Sub "${AWS::StackName}-node-0"
 
-  # -----------------------  Bucket Policy (IP-based allow) ----------------------
-  VulnerableBucketPolicy:
-    Type: AWS::S3::BucketPolicy
+  Node1:
+    Type: AWS::EC2::Instance
     Properties:
-      Bucket: !Ref VulnerableBucket
-      PolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          # Allow GetObject ONLY from whitelisted CIDRs / IPs (if supplied)
-          - Sid: AllowWhitelistedIPs
-            Effect: Allow
-            Principal: "*"
-            Action: "s3:GetObject"
-            Resource: !Sub "${VulnerableBucket.Arn}/*"
-            Condition:
-              IpAddress:
-                "aws:SourceIp":
-                  !If
-                  # merge the two lists; CloudFormation needs a literal list
-                  - HasAllowedCidr
-                  - !If
-                    - HasOffSecIps
-                    - !Split [ ",", !Join [ ",", [ !Join [ ",", !Ref AllowedInboundCidrBlocks ], !Join [ ",", !Ref OffensiveSecurityAccess ] ] ] ]
-                    - !Ref AllowedInboundCidrBlocks
-                  - !If
-                    - HasOffSecIps
-                    - !Ref OffensiveSecurityAccess
-                    - [ "0.0.0.0/32" ]   # dummy, never matched, keeps policy valid
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      ImageId: !Ref AmiId
+      SubnetId: !Select [ 1, !Ref SubnetIds ]
+      SecurityGroupIds: [ !Ref NodeSecurityGroup ]
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-node-1"
 
-          # Deny non-TLS (safety net)
-          - Sid: DenyInsecureTransport
-            Effect: Deny
-            Principal: "*"
-            Action: "s3:*"
-            Resource: !Sub "${VulnerableBucket.Arn}/*"
-            Condition:
-              Bool: { "aws:SecureTransport": false }
-
-###############################################################################
-# Outputs – parity with outputs.tf
-###############################################################################
 Outputs:
-  BucketName:
-    Description: "Name of the created S3 bucket"
-    Value: !Ref VulnerableBucket
-    Export: { Name: !Sub "${AWS::StackName}-BucketName" }
+  Node0Id:
+    Value: !Ref Node0
+    Export:
+      Name: !Sub "${AWS::StackName}-Node0Id"
 
-  BucketArn:
-    Description: "ARN of the created S3 bucket"
-    Value: !GetAtt VulnerableBucket.Arn
-    Export: { Name: !Sub "${AWS::StackName}-BucketArn" }
+  Node1Id:
+    Value: !Ref Node1
+    Export:
+      Name: !Sub "${AWS::StackName}-Node1Id"
 
-  BucketRegion:
-    Description: "Region where the bucket is created"
-    Value: !Ref "AWS::Region"
-    Export: { Name: !Sub "${AWS::StackName}-BucketRegion" }
+  SecurityGroupId:
+    Value: !Ref NodeSecurityGroup
+    Export:
+      Name: !Sub "${AWS::StackName}-SGId"

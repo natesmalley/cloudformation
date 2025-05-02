@@ -1,0 +1,71 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.UsageTrackingAddOn = exports.GravitonBuilder = void 0;
+const stacks_1 = require("../stacks");
+const utils = require("../utils");
+const addons = require("../addons");
+const cluster_providers_1 = require("../cluster-providers");
+const aws_cdk_lib_1 = require("aws-cdk-lib");
+const eks = require("aws-cdk-lib/aws-eks");
+const ec2 = require("aws-cdk-lib/aws-ec2");
+const utils_1 = require("../utils");
+const ts_deepmerge_1 = require("ts-deepmerge");
+/**
+ * Default props to be used when creating the Graviton nodes
+ * for EKS cluster
+ */
+const defaultOptions = {
+    version: eks.KubernetesVersion.of("1.28"),
+    instanceTypes: [ec2.InstanceType.of(ec2.InstanceClass.M7G, ec2.InstanceSize.XLARGE)],
+    amiType: eks.NodegroupAmiType.AL2_ARM_64,
+    desiredSize: 3,
+    minSize: 2,
+    maxSize: 5
+};
+/**
+ * This builder class helps you prepare a blueprint for setting up
+ * Graviton nodes with EKS cluster. The `GravitonBuilder` creates the following:
+ * 1. An EKS Cluster` with passed k8s version.
+ * 2. A managed graviton nodegroup for ARM64 software.
+ * 3. Validates each addon is supported for the given architecture.
+ *
+ * @example
+ * ```typescript
+ * import { GravitonBuilder }
+ */
+class GravitonBuilder extends stacks_1.BlueprintBuilder {
+    addOns(...addOns) {
+        addOns.forEach(a => (0, utils_1.validateSupportedArchitecture)(a.constructor.name, utils_1.ArchType.ARM));
+        return super.addOns(...addOns);
+    }
+    static builder(options) {
+        const builder = new GravitonBuilder();
+        const mergedOptions = (0, ts_deepmerge_1.merge)(defaultOptions, options);
+        builder
+            .clusterProvider(new cluster_providers_1.MngClusterProvider(mergedOptions))
+            .addOns(new addons.NestedStackAddOn({
+            id: "usage-tracking-addon",
+            builder: UsageTrackingAddOn.builder(),
+        }), new addons.AwsLoadBalancerControllerAddOn(), new addons.KubeProxyAddOn("auto"), new addons.VpcCniAddOn());
+        return builder;
+    }
+}
+exports.GravitonBuilder = GravitonBuilder;
+/**
+ * Nested stack that is used as tracker for Graviton Accelerator
+ */
+class UsageTrackingAddOn extends aws_cdk_lib_1.NestedStack {
+    static builder() {
+        return {
+            build(scope, id, props) {
+                return new UsageTrackingAddOn(scope, id, props);
+            }
+        };
+    }
+    constructor(scope, id, props) {
+        super(scope, id, utils.withUsageTracking(UsageTrackingAddOn.USAGE_ID, props));
+    }
+}
+exports.UsageTrackingAddOn = UsageTrackingAddOn;
+UsageTrackingAddOn.USAGE_ID = "qs-1ub15dn1f";
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJmaWxlIjoiZ3Jhdml0b24tYnVpbGRlci5qcyIsInNvdXJjZVJvb3QiOiIiLCJzb3VyY2VzIjpbIi4uLy4uL2xpYi9idWlsZGVycy9ncmF2aXRvbi1idWlsZGVyLnRzIl0sIm5hbWVzIjpbXSwibWFwcGluZ3MiOiI7OztBQUFBLHNDQUE2QztBQUM3QyxrQ0FBa0M7QUFDbEMsb0NBQW9DO0FBRXBDLDREQUFtRjtBQUNuRiw2Q0FBNEQ7QUFFNUQsMkNBQTJDO0FBQzNDLDJDQUEyQztBQUMzQyxvQ0FBbUU7QUFDbkUsK0NBQXFDO0FBRXJDOzs7R0FHRztBQUNILE1BQU0sY0FBYyxHQUFxQztJQUNyRCxPQUFPLEVBQUUsR0FBRyxDQUFDLGlCQUFpQixDQUFDLEVBQUUsQ0FBQyxNQUFNLENBQUM7SUFDekMsYUFBYSxFQUFHLENBQUMsR0FBRyxDQUFDLFlBQVksQ0FBQyxFQUFFLENBQUMsR0FBRyxDQUFDLGFBQWEsQ0FBQyxHQUFHLEVBQUUsR0FBRyxDQUFDLFlBQVksQ0FBQyxNQUFNLENBQUMsQ0FBQztJQUNyRixPQUFPLEVBQUUsR0FBRyxDQUFDLGdCQUFnQixDQUFDLFVBQVU7SUFDeEMsV0FBVyxFQUFFLENBQUM7SUFDZCxPQUFPLEVBQUUsQ0FBQztJQUNWLE9BQU8sRUFBRSxDQUFDO0NBQ2IsQ0FBQztBQUVGOzs7Ozs7Ozs7O0dBVUc7QUFFSCxNQUFhLGVBQWdCLFNBQVEseUJBQWdCO0lBRTFDLE1BQU0sQ0FBQyxHQUFHLE1BQTBCO1FBQ3ZDLE1BQU0sQ0FBQyxPQUFPLENBQUMsQ0FBQyxDQUFDLEVBQUUsQ0FBQyxJQUFBLHFDQUE2QixFQUFDLENBQUMsQ0FBQyxXQUFXLENBQUMsSUFBSSxFQUFFLGdCQUFRLENBQUMsR0FBRyxDQUFDLENBQUMsQ0FBQztRQUNyRixPQUFPLEtBQUssQ0FBQyxNQUFNLENBQUMsR0FBRyxNQUFNLENBQUMsQ0FBQztJQUNuQyxDQUFDO0lBRU0sTUFBTSxDQUFDLE9BQU8sQ0FBQyxPQUF5QztRQUMzRCxNQUFNLE9BQU8sR0FBRyxJQUFJLGVBQWUsRUFBRSxDQUFDO1FBQ3RDLE1BQU0sYUFBYSxHQUFHLElBQUEsb0JBQUssRUFBQyxjQUFjLEVBQUUsT0FBTyxDQUFDLENBQUM7UUFFckQsT0FBTzthQUNGLGVBQWUsQ0FBQyxJQUFJLHNDQUFrQixDQUFDLGFBQWEsQ0FBQyxDQUFDO2FBQ3RELE1BQU0sQ0FDSCxJQUFJLE1BQU0sQ0FBQyxnQkFBZ0IsQ0FBQztZQUN4QixFQUFFLEVBQUUsc0JBQXNCO1lBQzFCLE9BQU8sRUFBRSxrQkFBa0IsQ0FBQyxPQUFPLEVBQUU7U0FDeEMsQ0FBQyxFQUNGLElBQUksTUFBTSxDQUFDLDhCQUE4QixFQUFFLEVBQzNDLElBQUksTUFBTSxDQUFDLGNBQWMsQ0FBQyxNQUFNLENBQUMsRUFDakMsSUFBSSxNQUFNLENBQUMsV0FBVyxFQUFFLENBQzNCLENBQUM7UUFDTixPQUFPLE9BQU8sQ0FBQztJQUNuQixDQUFDO0NBQ0o7QUF4QkQsMENBd0JDO0FBRUQ7O0dBRUc7QUFDSCxNQUFhLGtCQUFtQixTQUFRLHlCQUFXO0lBSXhDLE1BQU0sQ0FBQyxPQUFPO1FBQ2pCLE9BQU87WUFDSCxLQUFLLENBQUMsS0FBZ0IsRUFBRSxFQUFVLEVBQUUsS0FBdUI7Z0JBQ3ZELE9BQU8sSUFBSSxrQkFBa0IsQ0FBQyxLQUFLLEVBQUUsRUFBRSxFQUFFLEtBQUssQ0FBQyxDQUFDO1lBQ3BELENBQUM7U0FDSixDQUFDO0lBQ04sQ0FBQztJQUVELFlBQVksS0FBZ0IsRUFBRSxFQUFVLEVBQUUsS0FBdUI7UUFDN0QsS0FBSyxDQUFDLEtBQUssRUFBRSxFQUFFLEVBQUUsS0FBSyxDQUFDLGlCQUFpQixDQUFDLGtCQUFrQixDQUFDLFFBQVEsRUFBRSxLQUFLLENBQUMsQ0FBQyxDQUFDO0lBQ2xGLENBQUM7O0FBZEwsZ0RBZUM7QUFibUIsMkJBQVEsR0FBRyxjQUFjLENBQUMiLCJzb3VyY2VzQ29udGVudCI6WyJpbXBvcnQgeyBCbHVlcHJpbnRCdWlsZGVyIH0gZnJvbSAnLi4vc3RhY2tzJztcbmltcG9ydCAqIGFzIHV0aWxzIGZyb20gXCIuLi91dGlsc1wiO1xuaW1wb3J0ICogYXMgYWRkb25zIGZyb20gJy4uL2FkZG9ucyc7XG5pbXBvcnQgKiBhcyBzcGkgZnJvbSAnLi4vc3BpJztcbmltcG9ydCB7IE1uZ0NsdXN0ZXJQcm92aWRlciwgTW5nQ2x1c3RlclByb3ZpZGVyUHJvcHMgfSBmcm9tICcuLi9jbHVzdGVyLXByb3ZpZGVycyc7XG5pbXBvcnQgeyBOZXN0ZWRTdGFjaywgTmVzdGVkU3RhY2tQcm9wcyB9IGZyb20gJ2F3cy1jZGstbGliJztcbmltcG9ydCB7IENvbnN0cnVjdCB9IGZyb20gJ2NvbnN0cnVjdHMnO1xuaW1wb3J0ICogYXMgZWtzIGZyb20gXCJhd3MtY2RrLWxpYi9hd3MtZWtzXCI7XG5pbXBvcnQgKiBhcyBlYzIgZnJvbSBcImF3cy1jZGstbGliL2F3cy1lYzJcIjtcbmltcG9ydCB7IHZhbGlkYXRlU3VwcG9ydGVkQXJjaGl0ZWN0dXJlLCBBcmNoVHlwZSB9IGZyb20gXCIuLi91dGlsc1wiO1xuaW1wb3J0IHsgbWVyZ2UgfSBmcm9tIFwidHMtZGVlcG1lcmdlXCI7XG5cbi8qKlxuICogRGVmYXVsdCBwcm9wcyB0byBiZSB1c2VkIHdoZW4gY3JlYXRpbmcgdGhlIEdyYXZpdG9uIG5vZGVzIFxuICogZm9yIEVLUyBjbHVzdGVyXG4gKi9cbmNvbnN0IGRlZmF1bHRPcHRpb25zOiBQYXJ0aWFsPE1uZ0NsdXN0ZXJQcm92aWRlclByb3BzPiA9IHtcbiAgICB2ZXJzaW9uOiBla3MuS3ViZXJuZXRlc1ZlcnNpb24ub2YoXCIxLjI4XCIpLFxuICAgIGluc3RhbmNlVHlwZXM6ICBbZWMyLkluc3RhbmNlVHlwZS5vZihlYzIuSW5zdGFuY2VDbGFzcy5NN0csIGVjMi5JbnN0YW5jZVNpemUuWExBUkdFKV0sXG4gICAgYW1pVHlwZTogZWtzLk5vZGVncm91cEFtaVR5cGUuQUwyX0FSTV82NCxcbiAgICBkZXNpcmVkU2l6ZTogMyxcbiAgICBtaW5TaXplOiAyLFxuICAgIG1heFNpemU6IDVcbn07XG5cbi8qKiBcbiAqIFRoaXMgYnVpbGRlciBjbGFzcyBoZWxwcyB5b3UgcHJlcGFyZSBhIGJsdWVwcmludCBmb3Igc2V0dGluZyB1cCBcbiAqIEdyYXZpdG9uIG5vZGVzIHdpdGggRUtTIGNsdXN0ZXIuIFRoZSBgR3Jhdml0b25CdWlsZGVyYCBjcmVhdGVzIHRoZSBmb2xsb3dpbmc6XG4gKiAxLiBBbiBFS1MgQ2x1c3RlcmAgd2l0aCBwYXNzZWQgazhzIHZlcnNpb24uXG4gKiAyLiBBIG1hbmFnZWQgZ3Jhdml0b24gbm9kZWdyb3VwIGZvciBBUk02NCBzb2Z0d2FyZS5cbiAqIDMuIFZhbGlkYXRlcyBlYWNoIGFkZG9uIGlzIHN1cHBvcnRlZCBmb3IgdGhlIGdpdmVuIGFyY2hpdGVjdHVyZS5cbiAqIFxuICogQGV4YW1wbGVcbiAqIGBgYHR5cGVzY3JpcHRcbiAqIGltcG9ydCB7IEdyYXZpdG9uQnVpbGRlciB9XG4gKi9cblxuZXhwb3J0IGNsYXNzIEdyYXZpdG9uQnVpbGRlciBleHRlbmRzIEJsdWVwcmludEJ1aWxkZXIge1xuXG4gICAgcHVibGljIGFkZE9ucyguLi5hZGRPbnM6IHNwaS5DbHVzdGVyQWRkT25bXSk6IHRoaXMge1xuICAgICAgICBhZGRPbnMuZm9yRWFjaChhID0+IHZhbGlkYXRlU3VwcG9ydGVkQXJjaGl0ZWN0dXJlKGEuY29uc3RydWN0b3IubmFtZSwgQXJjaFR5cGUuQVJNKSk7IFxuICAgICAgICByZXR1cm4gc3VwZXIuYWRkT25zKC4uLmFkZE9ucyk7XG4gICAgfVxuXG4gICAgcHVibGljIHN0YXRpYyBidWlsZGVyKG9wdGlvbnM6IFBhcnRpYWw8TW5nQ2x1c3RlclByb3ZpZGVyUHJvcHM+KTogR3Jhdml0b25CdWlsZGVyIHtcbiAgICAgICAgY29uc3QgYnVpbGRlciA9IG5ldyBHcmF2aXRvbkJ1aWxkZXIoKTtcbiAgICAgICAgY29uc3QgbWVyZ2VkT3B0aW9ucyA9IG1lcmdlKGRlZmF1bHRPcHRpb25zLCBvcHRpb25zKTtcblxuICAgICAgICBidWlsZGVyXG4gICAgICAgICAgICAuY2x1c3RlclByb3ZpZGVyKG5ldyBNbmdDbHVzdGVyUHJvdmlkZXIobWVyZ2VkT3B0aW9ucykpXG4gICAgICAgICAgICAuYWRkT25zKFxuICAgICAgICAgICAgICAgIG5ldyBhZGRvbnMuTmVzdGVkU3RhY2tBZGRPbih7XG4gICAgICAgICAgICAgICAgICAgIGlkOiBcInVzYWdlLXRyYWNraW5nLWFkZG9uXCIsXG4gICAgICAgICAgICAgICAgICAgIGJ1aWxkZXI6IFVzYWdlVHJhY2tpbmdBZGRPbi5idWlsZGVyKCksXG4gICAgICAgICAgICAgICAgfSksXG4gICAgICAgICAgICAgICAgbmV3IGFkZG9ucy5Bd3NMb2FkQmFsYW5jZXJDb250cm9sbGVyQWRkT24oKSxcbiAgICAgICAgICAgICAgICBuZXcgYWRkb25zLkt1YmVQcm94eUFkZE9uKFwiYXV0b1wiKSxcbiAgICAgICAgICAgICAgICBuZXcgYWRkb25zLlZwY0NuaUFkZE9uKCksXG4gICAgICAgICAgICApO1xuICAgICAgICByZXR1cm4gYnVpbGRlcjtcbiAgICB9XG59XG5cbi8qKlxuICogTmVzdGVkIHN0YWNrIHRoYXQgaXMgdXNlZCBhcyB0cmFja2VyIGZvciBHcmF2aXRvbiBBY2NlbGVyYXRvclxuICovXG5leHBvcnQgY2xhc3MgVXNhZ2VUcmFja2luZ0FkZE9uIGV4dGVuZHMgTmVzdGVkU3RhY2sge1xuXG4gICAgc3RhdGljIHJlYWRvbmx5IFVTQUdFX0lEID0gXCJxcy0xdWIxNWRuMWZcIjtcblxuICAgIHB1YmxpYyBzdGF0aWMgYnVpbGRlcigpOiBzcGkuTmVzdGVkU3RhY2tCdWlsZGVyIHtcbiAgICAgICAgcmV0dXJuIHtcbiAgICAgICAgICAgIGJ1aWxkKHNjb3BlOiBDb25zdHJ1Y3QsIGlkOiBzdHJpbmcsIHByb3BzOiBOZXN0ZWRTdGFja1Byb3BzKSB7XG4gICAgICAgICAgICAgICAgcmV0dXJuIG5ldyBVc2FnZVRyYWNraW5nQWRkT24oc2NvcGUsIGlkLCBwcm9wcyk7XG4gICAgICAgICAgICB9XG4gICAgICAgIH07XG4gICAgfVxuXG4gICAgY29uc3RydWN0b3Ioc2NvcGU6IENvbnN0cnVjdCwgaWQ6IHN0cmluZywgcHJvcHM6IE5lc3RlZFN0YWNrUHJvcHMpIHtcbiAgICAgICAgc3VwZXIoc2NvcGUsIGlkLCB1dGlscy53aXRoVXNhZ2VUcmFja2luZyhVc2FnZVRyYWNraW5nQWRkT24uVVNBR0VfSUQsIHByb3BzKSk7XG4gICAgfVxufSJdfQ==

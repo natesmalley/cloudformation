@@ -1,0 +1,73 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Orchestrator stack – runs CDK EKS Blueprints from a zipped artefact.
+
+###############################################################################
+# Parameters – S3 location of the CDK bundle
+###############################################################################
+Parameters:
+  CodeBucket:
+    Type: String
+    Description: S3 bucket that stores eks-blueprints-app.zip
+  CodeKey:
+    Type: String
+    Description: Object key (path) of eks-blueprints-app.zip inside the bucket
+  LambdaTimeout:
+    Type: Number
+    Default: 900
+    Description: Lambda timeout in seconds (default 15 min)
+
+###############################################################################
+# Lambda execution role
+###############################################################################
+Resources:
+  CdkRunnerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        # NB: Reduce to least‑privilege if desired
+        - arn:aws:iam::aws:policy/AdministratorAccess
+
+###############################################################################
+# Lambda function that bootstraps & deploys the CDK app
+###############################################################################
+  CdkRunnerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: nodejs18.x
+      Handler: index.handler
+      Timeout: !Ref LambdaTimeout
+      Role: !GetAtt CdkRunnerRole.Arn
+      Code:
+        S3Bucket: !Ref CodeBucket
+        S3Key:    !Ref CodeKey
+      Environment:
+        Variables:
+          # used by CDK app (bin/main.ts) at runtime
+          CDK_DEFAULT_ACCOUNT: !Ref AWS::AccountId
+          CDK_DEFAULT_REGION:  !Ref AWS::Region
+
+###############################################################################
+# Custom resource to invoke the Lambda
+###############################################################################
+  CdkDeployTrigger:
+    Type: Custom::CdkDeployer
+    Properties:
+      ServiceToken: !GetAtt CdkRunnerFunction.Arn
+      # pass through any stack‑specific config via properties if needed
+      Dummy: "Trigger"
+
+###############################################################################
+# Outputs
+###############################################################################
+Outputs:
+  RunnerLambdaArn:
+    Description: ARN of the CDK runner Lambda
+    Value: !GetAtt CdkRunnerFunction.Arn

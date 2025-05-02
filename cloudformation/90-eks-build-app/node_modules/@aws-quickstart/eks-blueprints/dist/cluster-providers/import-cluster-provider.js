@@ -1,0 +1,93 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.ImportClusterProvider = void 0;
+exports.describeCluster = describeCluster;
+const spi_1 = require("../spi");
+const generic_cluster_provider_1 = require("./generic-cluster-provider");
+const eks = require("aws-cdk-lib/aws-eks");
+const sdk = require("@aws-sdk/client-eks");
+const utils_1 = require("../resource-providers/utils");
+const resource_providers_1 = require("../resource-providers");
+const utils_2 = require("../utils");
+const id_utils_1 = require("../utils/id-utils");
+/**
+ * Importing cluster into the blueprint enabling limited blueprinting capabilities such as adding certain addons,
+ * teams.
+ */
+class ImportClusterProvider {
+    constructor(props) {
+        var _a;
+        this.props = props;
+        this.id = (_a = props.id) !== null && _a !== void 0 ? _a : ((0, id_utils_1.isToken)(this.props.clusterName) ? (0, id_utils_1.uniqueId)() : this.props.clusterName);
+    }
+    /**
+     * Implements contract method to create a cluster, by importing an existing cluster.
+     * @param scope
+     * @param vpc
+     * @param _secretsEncryptionKey
+     * @returns
+     */
+    createCluster(scope, vpc, _secretsEncryptionKey) {
+        const props = { ...this.props, vpc };
+        if (!props.kubectlLayer) {
+            props.kubectlLayer = (0, generic_cluster_provider_1.selectKubectlLayer)(scope, props.version);
+        }
+        const existingCluster = eks.Cluster.fromClusterAttributes(scope, `imported-cluster-${this.id}`, props);
+        return new spi_1.ClusterInfo(existingCluster, this.props.version);
+    }
+    /**
+     * Requires iam permission to eks.DescribeCluster at build time. Retrieves the cluster information using DescribeCluster api and
+     * creates an import cluster provider.
+     * @param clusterName name of the cluster
+     * @param region target rego
+     * @param kubectlRole iam Role that provides access to the cluster API (kubectl). The CDK custom resource should be able to assume the role
+     * which in some cases may require trust policy for the account root principal.
+     * @returns the cluster provider with the import cluster configuration
+     */
+    static async fromClusterLookup(clusterName, region, kubectlRole) {
+        const sdkCluster = await describeCluster(clusterName, process.env.CDK_DEFAULT_REGION);
+        return this.fromClusterAttributes(sdkCluster, kubectlRole);
+    }
+    /**
+     * Creates a cluster provider for an existing cluster based on the passed result of the describe cluster command.
+     * @param sdkCluster
+     * @param kubectlRole
+     * @returns
+     */
+    static fromClusterAttributes(sdkCluster, kubectlRole) {
+        var _a, _b, _c;
+        return new ImportClusterProvider({
+            clusterName: sdkCluster.name,
+            version: eks.KubernetesVersion.of(sdkCluster.version),
+            clusterEndpoint: sdkCluster.endpoint,
+            openIdConnectProvider: (0, utils_1.getResource)(context => new resource_providers_1.LookupOpenIdConnectProvider(sdkCluster.identity.oidc.issuer).provide(context)),
+            clusterCertificateAuthorityData: (_a = sdkCluster.certificateAuthority) === null || _a === void 0 ? void 0 : _a.data,
+            kubectlRoleArn: kubectlRole.roleArn,
+            clusterSecurityGroupId: (_b = sdkCluster.resourcesVpcConfig) === null || _b === void 0 ? void 0 : _b.clusterSecurityGroupId,
+            securityGroupIds: (_c = sdkCluster.resourcesVpcConfig) === null || _c === void 0 ? void 0 : _c.securityGroupIds
+        });
+    }
+}
+exports.ImportClusterProvider = ImportClusterProvider;
+/**
+ * Wraps API call to get the data on the eks.Cluster.
+ * @param clusterName
+ * @param region
+ * @returns
+ */
+async function describeCluster(clusterName, region) {
+    const client = new sdk.EKSClient({ region });
+    const input = {
+        name: clusterName
+    };
+    const command = new sdk.DescribeClusterCommand(input);
+    try {
+        const response = await client.send(command);
+        return response.cluster;
+    }
+    catch (error) {
+        utils_2.logger.error(error);
+        throw error;
+    }
+}
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJmaWxlIjoiaW1wb3J0LWNsdXN0ZXItcHJvdmlkZXIuanMiLCJzb3VyY2VSb290IjoiIiwic291cmNlcyI6WyIuLi8uLi9saWIvY2x1c3Rlci1wcm92aWRlcnMvaW1wb3J0LWNsdXN0ZXItcHJvdmlkZXIudHMiXSwibmFtZXMiOltdLCJtYXBwaW5ncyI6Ijs7O0FBdUdBLDBDQWVDO0FBdEhELGdDQUFzRDtBQUN0RCx5RUFBZ0U7QUFFaEUsMkNBQTJDO0FBRzNDLDJDQUEyQztBQUUzQyx1REFBMEQ7QUFDMUQsOERBQW9FO0FBQ3BFLG9DQUFrQztBQUNsQyxnREFBc0Q7QUFtQnREOzs7R0FHRztBQUNILE1BQWEscUJBQXFCO0lBSTlCLFlBQXFCLEtBQWlDOztRQUFqQyxVQUFLLEdBQUwsS0FBSyxDQUE0QjtRQUNsRCxJQUFJLENBQUMsRUFBRSxHQUFHLE1BQUEsS0FBSyxDQUFDLEVBQUUsbUNBQUksQ0FBQyxJQUFBLGtCQUFPLEVBQUMsSUFBSSxDQUFDLEtBQUssQ0FBQyxXQUFXLENBQUMsQ0FBQyxDQUFDLENBQUMsSUFBQSxtQkFBUSxHQUFFLENBQUMsQ0FBQyxDQUFDLElBQUksQ0FBQyxLQUFLLENBQUMsV0FBVyxDQUFDLENBQUM7SUFDbEcsQ0FBQztJQUVEOzs7Ozs7T0FNRztJQUNILGFBQWEsQ0FBQyxLQUFnQixFQUFFLEdBQVMsRUFBRSxxQkFBd0M7UUFDL0UsTUFBTSxLQUFLLEdBQUcsRUFBRSxHQUFHLElBQUksQ0FBQyxLQUFLLEVBQUUsR0FBRyxFQUFFLENBQUM7UUFFckMsSUFBRyxDQUFFLEtBQUssQ0FBQyxZQUFZLEVBQUUsQ0FBQztZQUN0QixLQUFLLENBQUMsWUFBWSxHQUFHLElBQUEsNkNBQWtCLEVBQUMsS0FBSyxFQUFFLEtBQUssQ0FBQyxPQUFPLENBQUMsQ0FBQztRQUNsRSxDQUFDO1FBQ0QsTUFBTSxlQUFlLEdBQUcsR0FBRyxDQUFDLE9BQU8sQ0FBQyxxQkFBcUIsQ0FBQyxLQUFLLEVBQUUsb0JBQW9CLElBQUksQ0FBQyxFQUFFLEVBQUUsRUFBRSxLQUFLLENBQUMsQ0FBQztRQUN2RyxPQUFPLElBQUksaUJBQVcsQ0FBQyxlQUFlLEVBQUUsSUFBSSxDQUFDLEtBQUssQ0FBQyxPQUFPLENBQUMsQ0FBQztJQUNoRSxDQUFDO0lBR0Q7Ozs7Ozs7O09BUUc7SUFDSSxNQUFNLENBQUMsS0FBSyxDQUFDLGlCQUFpQixDQUFDLFdBQW1CLEVBQUUsTUFBYyxFQUFFLFdBQWtCO1FBR3pGLE1BQU0sVUFBVSxHQUFHLE1BQU0sZUFBZSxDQUFDLFdBQVcsRUFBRSxPQUFPLENBQUMsR0FBRyxDQUFDLGtCQUFtQixDQUFDLENBQUM7UUFDdkYsT0FBTyxJQUFJLENBQUMscUJBQXFCLENBQUMsVUFBVSxFQUFFLFdBQVcsQ0FBQyxDQUFDO0lBQy9ELENBQUM7SUFFRDs7Ozs7T0FLRztJQUNJLE1BQU0sQ0FBQyxxQkFBcUIsQ0FBQyxVQUF1QixFQUFFLFdBQWtCOztRQUMzRSxPQUFPLElBQUkscUJBQXFCLENBQUM7WUFDN0IsV0FBVyxFQUFFLFVBQVUsQ0FBQyxJQUFLO1lBQzdCLE9BQU8sRUFBRSxHQUFHLENBQUMsaUJBQWlCLENBQUMsRUFBRSxDQUFDLFVBQVUsQ0FBQyxPQUFRLENBQUM7WUFDdEQsZUFBZSxFQUFFLFVBQVUsQ0FBQyxRQUFRO1lBQ3BDLHFCQUFxQixFQUFFLElBQUEsbUJBQVcsRUFBQyxPQUFPLENBQUMsRUFBRSxDQUN6QyxJQUFJLGdEQUEyQixDQUFDLFVBQVUsQ0FBQyxRQUFTLENBQUMsSUFBSyxDQUFDLE1BQU8sQ0FBQyxDQUFDLE9BQU8sQ0FBQyxPQUFPLENBQUMsQ0FBQztZQUN6RiwrQkFBK0IsRUFBRSxNQUFBLFVBQVUsQ0FBQyxvQkFBb0IsMENBQUUsSUFBSTtZQUN0RSxjQUFjLEVBQUUsV0FBVyxDQUFDLE9BQU87WUFDbkMsc0JBQXNCLEVBQUUsTUFBQSxVQUFVLENBQUMsa0JBQWtCLDBDQUFFLHNCQUFzQjtZQUM3RSxnQkFBZ0IsRUFBRSxNQUFBLFVBQVUsQ0FBQyxrQkFBa0IsMENBQUUsZ0JBQWdCO1NBQ3BFLENBQUMsQ0FBQztJQUNQLENBQUM7Q0FDSjtBQTdERCxzREE2REM7QUFFRDs7Ozs7R0FLRztBQUNJLEtBQUssVUFBVSxlQUFlLENBQUMsV0FBbUIsRUFBRSxNQUFjO0lBQ3JFLE1BQU0sTUFBTSxHQUFHLElBQUksR0FBRyxDQUFDLFNBQVMsQ0FBQyxFQUFFLE1BQU0sRUFBRSxDQUFDLENBQUM7SUFDN0MsTUFBTSxLQUFLLEdBQStCO1FBQ3RDLElBQUksRUFBRSxXQUFXO0tBQ3BCLENBQUM7SUFFRixNQUFNLE9BQU8sR0FBRyxJQUFJLEdBQUcsQ0FBQyxzQkFBc0IsQ0FBQyxLQUFLLENBQUMsQ0FBQztJQUN0RCxJQUFJLENBQUM7UUFDRCxNQUFNLFFBQVEsR0FBRyxNQUFNLE1BQU0sQ0FBQyxJQUFJLENBQUMsT0FBTyxDQUFDLENBQUM7UUFDNUMsT0FBTyxRQUFRLENBQUMsT0FBUSxDQUFDO0lBQzdCLENBQUM7SUFDRCxPQUFPLEtBQUssRUFBRSxDQUFDO1FBQ1gsY0FBTSxDQUFDLEtBQUssQ0FBQyxLQUFLLENBQUMsQ0FBQztRQUNwQixNQUFNLEtBQUssQ0FBQztJQUNoQixDQUFDO0FBQ0wsQ0FBQyIsInNvdXJjZXNDb250ZW50IjpbImltcG9ydCB7IENsdXN0ZXJJbmZvLCBDbHVzdGVyUHJvdmlkZXIgfSBmcm9tIFwiLi4vc3BpXCI7XG5pbXBvcnQgeyBzZWxlY3RLdWJlY3RsTGF5ZXIgfSBmcm9tIFwiLi9nZW5lcmljLWNsdXN0ZXItcHJvdmlkZXJcIjtcbmltcG9ydCB7IElWcGMgfSBmcm9tIFwiYXdzLWNkay1saWIvYXdzLWVjMlwiO1xuaW1wb3J0ICogYXMgZWtzIGZyb20gXCJhd3MtY2RrLWxpYi9hd3MtZWtzXCI7XG5pbXBvcnQgeyBJUm9sZSB9IGZyb20gXCJhd3MtY2RrLWxpYi9hd3MtaWFtXCI7XG5pbXBvcnQgeyBJS2V5IH0gZnJvbSBcImF3cy1jZGstbGliL2F3cy1rbXNcIjtcbmltcG9ydCAqIGFzIHNkayBmcm9tIFwiQGF3cy1zZGsvY2xpZW50LWVrc1wiO1xuaW1wb3J0IHsgQ29uc3RydWN0IH0gZnJvbSBcImNvbnN0cnVjdHNcIjtcbmltcG9ydCB7IGdldFJlc291cmNlIH0gZnJvbSBcIi4uL3Jlc291cmNlLXByb3ZpZGVycy91dGlsc1wiO1xuaW1wb3J0IHsgTG9va3VwT3BlbklkQ29ubmVjdFByb3ZpZGVyIH0gZnJvbSBcIi4uL3Jlc291cmNlLXByb3ZpZGVyc1wiO1xuaW1wb3J0IHsgbG9nZ2VyIH0gZnJvbSBcIi4uL3V0aWxzXCI7XG5pbXBvcnQgeyBpc1Rva2VuLCB1bmlxdWVJZCB9IGZyb20gXCIuLi91dGlscy9pZC11dGlsc1wiO1xuXG5cbi8qKlxuICogUHJvcGVydGllcyBvYmplY3QgZm9yIHRoZSBJbXBvcnRDbHVzdGVyUHJvdmlkZXIuXG4gKi9cbmV4cG9ydCBpbnRlcmZhY2UgSW1wb3J0Q2x1c3RlclByb3ZpZGVyUHJvcHMgZXh0ZW5kcyBPbWl0PGVrcy5DbHVzdGVyQXR0cmlidXRlcywgXCJ2cGNcIj4ge1xuICAgIFxuICAgIC8qKlxuICAgICAqIFVzZWQgZm9yIHRoZSBDREsgY29uc3RydWN0IGlkIGZvciB0aGUgaW1wb3J0ZWQgY2x1c3Rlci4gVXNlZnVsIHdoZW4gcGFzc2luZyB0b2tlbnMgZm9yIGNsdXN0ZXIgbmFtZS4gXG4gICAgICovXG4gICAgaWQ/OiBzdHJpbmc7XG5cbiAgICAvKipcbiAgICAgKiBUaGlzIHByb3BlcnR5IGlzIG5lZWRlZCBhcyBpdCBkcml2ZXMgc2VsZWN0aW9uIG9mIGNlcnRhaW4gYWRkLW9uIHZlcnNpb25zIGFzIHdlbGwgYXMga3ViZWN0bCBsYXllci4gXG4gICAgICovXG4gICAgdmVyc2lvbjogZWtzLkt1YmVybmV0ZXNWZXJzaW9uO1xufVxuXG4vKipcbiAqIEltcG9ydGluZyBjbHVzdGVyIGludG8gdGhlIGJsdWVwcmludCBlbmFibGluZyBsaW1pdGVkIGJsdWVwcmludGluZyBjYXBhYmlsaXRpZXMgc3VjaCBhcyBhZGRpbmcgY2VydGFpbiBhZGRvbnMsIFxuICogdGVhbXMuXG4gKi9cbmV4cG9ydCBjbGFzcyBJbXBvcnRDbHVzdGVyUHJvdmlkZXIgaW1wbGVtZW50cyBDbHVzdGVyUHJvdmlkZXIge1xuXG4gICAgcmVhZG9ubHkgaWQ6IHN0cmluZztcblxuICAgIGNvbnN0cnVjdG9yKHJlYWRvbmx5IHByb3BzOiBJbXBvcnRDbHVzdGVyUHJvdmlkZXJQcm9wcykgeyBcbiAgICAgICAgdGhpcy5pZCA9IHByb3BzLmlkID8/IChpc1Rva2VuKHRoaXMucHJvcHMuY2x1c3Rlck5hbWUpID8gdW5pcXVlSWQoKSA6IHRoaXMucHJvcHMuY2x1c3Rlck5hbWUpO1xuICAgIH1cblxuICAgIC8qKlxuICAgICAqIEltcGxlbWVudHMgY29udHJhY3QgbWV0aG9kIHRvIGNyZWF0ZSBhIGNsdXN0ZXIsIGJ5IGltcG9ydGluZyBhbiBleGlzdGluZyBjbHVzdGVyLlxuICAgICAqIEBwYXJhbSBzY29wZSBcbiAgICAgKiBAcGFyYW0gdnBjIFxuICAgICAqIEBwYXJhbSBfc2VjcmV0c0VuY3J5cHRpb25LZXkgXG4gICAgICogQHJldHVybnMgXG4gICAgICovXG4gICAgY3JlYXRlQ2x1c3RlcihzY29wZTogQ29uc3RydWN0LCB2cGM6IElWcGMsIF9zZWNyZXRzRW5jcnlwdGlvbktleT86IElLZXkgfCB1bmRlZmluZWQpOiBDbHVzdGVySW5mbyB7XG4gICAgICAgIGNvbnN0IHByb3BzID0geyAuLi50aGlzLnByb3BzLCB2cGMgfTtcblxuICAgICAgICBpZighIHByb3BzLmt1YmVjdGxMYXllcikge1xuICAgICAgICAgICAgcHJvcHMua3ViZWN0bExheWVyID0gc2VsZWN0S3ViZWN0bExheWVyKHNjb3BlLCBwcm9wcy52ZXJzaW9uKTtcbiAgICAgICAgfVxuICAgICAgICBjb25zdCBleGlzdGluZ0NsdXN0ZXIgPSBla3MuQ2x1c3Rlci5mcm9tQ2x1c3RlckF0dHJpYnV0ZXMoc2NvcGUsIGBpbXBvcnRlZC1jbHVzdGVyLSR7dGhpcy5pZH1gLCBwcm9wcyk7XG4gICAgICAgIHJldHVybiBuZXcgQ2x1c3RlckluZm8oZXhpc3RpbmdDbHVzdGVyLCB0aGlzLnByb3BzLnZlcnNpb24pO1xuICAgIH1cblxuXG4gICAgLyoqXG4gICAgICogUmVxdWlyZXMgaWFtIHBlcm1pc3Npb24gdG8gZWtzLkRlc2NyaWJlQ2x1c3RlciBhdCBidWlsZCB0aW1lLiBSZXRyaWV2ZXMgdGhlIGNsdXN0ZXIgaW5mb3JtYXRpb24gdXNpbmcgRGVzY3JpYmVDbHVzdGVyIGFwaSBhbmRcbiAgICAgKiBjcmVhdGVzIGFuIGltcG9ydCBjbHVzdGVyIHByb3ZpZGVyLiBcbiAgICAgKiBAcGFyYW0gY2x1c3Rlck5hbWUgbmFtZSBvZiB0aGUgY2x1c3RlclxuICAgICAqIEBwYXJhbSByZWdpb24gdGFyZ2V0IHJlZ29cbiAgICAgKiBAcGFyYW0ga3ViZWN0bFJvbGUgaWFtIFJvbGUgdGhhdCBwcm92aWRlcyBhY2Nlc3MgdG8gdGhlIGNsdXN0ZXIgQVBJIChrdWJlY3RsKS4gVGhlIENESyBjdXN0b20gcmVzb3VyY2Ugc2hvdWxkIGJlIGFibGUgdG8gYXNzdW1lIHRoZSByb2xlXG4gICAgICogd2hpY2ggaW4gc29tZSBjYXNlcyBtYXkgcmVxdWlyZSB0cnVzdCBwb2xpY3kgZm9yIHRoZSBhY2NvdW50IHJvb3QgcHJpbmNpcGFsLlxuICAgICAqIEByZXR1cm5zIHRoZSBjbHVzdGVyIHByb3ZpZGVyIHdpdGggdGhlIGltcG9ydCBjbHVzdGVyIGNvbmZpZ3VyYXRpb25cbiAgICAgKi9cbiAgICBwdWJsaWMgc3RhdGljIGFzeW5jIGZyb21DbHVzdGVyTG9va3VwKGNsdXN0ZXJOYW1lOiBzdHJpbmcsIHJlZ2lvbjogc3RyaW5nLCBrdWJlY3RsUm9sZTogSVJvbGUpOiBcbiAgICAgICAgUHJvbWlzZTxDbHVzdGVyUHJvdmlkZXI+IHtcblxuICAgICAgICBjb25zdCBzZGtDbHVzdGVyID0gYXdhaXQgZGVzY3JpYmVDbHVzdGVyKGNsdXN0ZXJOYW1lLCBwcm9jZXNzLmVudi5DREtfREVGQVVMVF9SRUdJT04hKTtcbiAgICAgICAgcmV0dXJuIHRoaXMuZnJvbUNsdXN0ZXJBdHRyaWJ1dGVzKHNka0NsdXN0ZXIsIGt1YmVjdGxSb2xlKTtcbiAgICB9XG5cbiAgICAvKipcbiAgICAgKiBDcmVhdGVzIGEgY2x1c3RlciBwcm92aWRlciBmb3IgYW4gZXhpc3RpbmcgY2x1c3RlciBiYXNlZCBvbiB0aGUgcGFzc2VkIHJlc3VsdCBvZiB0aGUgZGVzY3JpYmUgY2x1c3RlciBjb21tYW5kLlxuICAgICAqIEBwYXJhbSBzZGtDbHVzdGVyIFxuICAgICAqIEBwYXJhbSBrdWJlY3RsUm9sZSBcbiAgICAgKiBAcmV0dXJucyBcbiAgICAgKi9cbiAgICBwdWJsaWMgc3RhdGljIGZyb21DbHVzdGVyQXR0cmlidXRlcyhzZGtDbHVzdGVyOiBzZGsuQ2x1c3Rlciwga3ViZWN0bFJvbGU6IElSb2xlKTogQ2x1c3RlclByb3ZpZGVyIHtcbiAgICAgICAgcmV0dXJuIG5ldyBJbXBvcnRDbHVzdGVyUHJvdmlkZXIoe1xuICAgICAgICAgICAgY2x1c3Rlck5hbWU6IHNka0NsdXN0ZXIubmFtZSEsXG4gICAgICAgICAgICB2ZXJzaW9uOiBla3MuS3ViZXJuZXRlc1ZlcnNpb24ub2Yoc2RrQ2x1c3Rlci52ZXJzaW9uISksXG4gICAgICAgICAgICBjbHVzdGVyRW5kcG9pbnQ6IHNka0NsdXN0ZXIuZW5kcG9pbnQsXG4gICAgICAgICAgICBvcGVuSWRDb25uZWN0UHJvdmlkZXI6IGdldFJlc291cmNlKGNvbnRleHQgPT5cbiAgICAgICAgICAgICAgICBuZXcgTG9va3VwT3BlbklkQ29ubmVjdFByb3ZpZGVyKHNka0NsdXN0ZXIuaWRlbnRpdHkhLm9pZGMhLmlzc3VlciEpLnByb3ZpZGUoY29udGV4dCkpLFxuICAgICAgICAgICAgY2x1c3RlckNlcnRpZmljYXRlQXV0aG9yaXR5RGF0YTogc2RrQ2x1c3Rlci5jZXJ0aWZpY2F0ZUF1dGhvcml0eT8uZGF0YSxcbiAgICAgICAgICAgIGt1YmVjdGxSb2xlQXJuOiBrdWJlY3RsUm9sZS5yb2xlQXJuLFxuICAgICAgICAgICAgY2x1c3RlclNlY3VyaXR5R3JvdXBJZDogc2RrQ2x1c3Rlci5yZXNvdXJjZXNWcGNDb25maWc/LmNsdXN0ZXJTZWN1cml0eUdyb3VwSWQsXG4gICAgICAgICAgICBzZWN1cml0eUdyb3VwSWRzOiBzZGtDbHVzdGVyLnJlc291cmNlc1ZwY0NvbmZpZz8uc2VjdXJpdHlHcm91cElkc1xuICAgICAgICB9KTtcbiAgICB9XG59XG5cbi8qKlxuICogV3JhcHMgQVBJIGNhbGwgdG8gZ2V0IHRoZSBkYXRhIG9uIHRoZSBla3MuQ2x1c3Rlci4gXG4gKiBAcGFyYW0gY2x1c3Rlck5hbWUgXG4gKiBAcGFyYW0gcmVnaW9uIFxuICogQHJldHVybnMgXG4gKi9cbmV4cG9ydCBhc3luYyBmdW5jdGlvbiBkZXNjcmliZUNsdXN0ZXIoY2x1c3Rlck5hbWU6IHN0cmluZywgcmVnaW9uOiBzdHJpbmcpOiBQcm9taXNlPHNkay5DbHVzdGVyPiB7XG4gICAgY29uc3QgY2xpZW50ID0gbmV3IHNkay5FS1NDbGllbnQoeyByZWdpb24gfSk7XG4gICAgY29uc3QgaW5wdXQ6IHNkay5EZXNjcmliZUNsdXN0ZXJSZXF1ZXN0ID0ge1xuICAgICAgICBuYW1lOiBjbHVzdGVyTmFtZVxuICAgIH07XG5cbiAgICBjb25zdCBjb21tYW5kID0gbmV3IHNkay5EZXNjcmliZUNsdXN0ZXJDb21tYW5kKGlucHV0KTtcbiAgICB0cnkge1xuICAgICAgICBjb25zdCByZXNwb25zZSA9IGF3YWl0IGNsaWVudC5zZW5kKGNvbW1hbmQpO1xuICAgICAgICByZXR1cm4gcmVzcG9uc2UuY2x1c3RlciE7XG4gICAgfVxuICAgIGNhdGNoIChlcnJvcikge1xuICAgICAgICBsb2dnZXIuZXJyb3IoZXJyb3IpO1xuICAgICAgICB0aHJvdyBlcnJvcjtcbiAgICB9XG59Il19

@@ -1,5 +1,3 @@
-{
-  "message": "Not Found",
-  "documentation_url": "https://docs.github.com/rest/releases/releases#get-the-latest-release",
-  "status": "404"
-}
+version https://git-lfs.github.com/spec/v1
+oid sha256:3be3b9547eef51cc49a1de5d482554e118735d9b860dd24f5cf1b6eccc3ab69e
+size 144

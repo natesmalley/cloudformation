@@ -1,6 +1,7 @@
 import { Construct } from 'constructs';
 import * as cdk from 'aws-cdk-lib';
 import * as eks from 'aws-cdk-lib/aws-eks';
+import { KubernetesManifest } from 'aws-cdk-lib/aws-eks';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import { KubectlV28Layer } from '@aws-cdk/lambda-layer-kubectl-v28';
 import * as fs from 'fs';
@@ -69,17 +70,23 @@ export class EksOperatorsCdkStack extends cdk.Stack {
         instanceTypes: [ new cdk.aws_ec2.InstanceType('t3.medium') ],
       });
 
-      // Pre-install ACK CRDs in manageable chunks (avoid Lambda 256 KB limit)
+      // Pre-install ACK CRDs in manageable chunks, sequentially to avoid Lambda rate limits
       const crdsPath = path.join(__dirname, '..', 'ack-crds.yaml');
       const crdsYaml = fs.readFileSync(crdsPath, 'utf8');
       const allDocs = yaml.loadAll(crdsYaml) as any[];
-      const chunkSize = 10; // adjust if needed
+      const chunkSize = 20; // larger chunk size to reduce number of manifests
+      const crdManifests: eks.KubernetesManifest[] = [];
       for (let i = 0; i < allDocs.length; i += chunkSize) {
         const group = allDocs.slice(i, i + chunkSize);
-        cluster.addManifest(
+        const manifest = cluster.addManifest(
           `AckControllersCRDsPart${Math.floor(i / chunkSize)}`,
           ...group
         );
+        crdManifests.push(manifest);
+      }
+      // Chain dependencies so they apply one after another
+      for (let i = 1; i < crdManifests.length; i++) {
+        crdManifests[i].node.addDependency(crdManifests[i - 1]);
       }
 
       // 5) Install SageMaker ACK Controller via Helm

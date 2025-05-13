@@ -89,6 +89,9 @@ export class EksOperatorsCdkStack extends cdk.Stack {
         crdManifests[i].node.addDependency(crdManifests[i - 1]);
       }
 
+      // Ensure Helm charts apply after CRDs
+      const lastCrdManifest = crdManifests[crdManifests.length - 1];
+
       // 5) Install SageMaker ACK Controller via Helm
       const ackSageMaker = new eks.HelmChart(this, 'ACKSageMaker', {
         cluster,
@@ -102,6 +105,7 @@ export class EksOperatorsCdkStack extends cdk.Stack {
         atomic: false,
         timeout: cdk.Duration.minutes(15),
       });
+      ackSageMaker.node.addDependency(lastCrdManifest);
 
       // 6) Install S3 ACK Controller via Helm
       const ackS3 = new eks.HelmChart(this, 'ACKS3', {
@@ -116,6 +120,7 @@ export class EksOperatorsCdkStack extends cdk.Stack {
         atomic: false,
         timeout: cdk.Duration.minutes(15),
       });
+      ackS3.node.addDependency(lastCrdManifest);
 
       // 5) Example SageMaker TrainingJob CR and 6) Example Bedrock InferenceJob CR combined
       const trainingJobObject = {
@@ -206,8 +211,7 @@ export class EksOperatorsCdkStack extends cdk.Stack {
           }
         }
       ]);
-      bedrockSampleManifest.node.addDependency(ackSageMaker);
-      bedrockSampleManifest.node.addDependency(ackS3);
+      bedrockSampleManifest.node.addDependency(exampleJobsManifest);
 
       // 8) Combine DVWA StatefulSet, Service, Deployment, and Service manifests
       const dvwaAllManifest = cluster.addManifest('DvwaAll', [
@@ -311,8 +315,7 @@ export class EksOperatorsCdkStack extends cdk.Stack {
           }
         }
       ]);
-      dvwaAllManifest.node.addDependency(ackSageMaker);
-      dvwaAllManifest.node.addDependency(ackS3);
+      dvwaAllManifest.node.addDependency(bedrockSampleManifest);
     }
   }
 }

@@ -4,9 +4,6 @@ import * as eks from 'aws-cdk-lib/aws-eks';
 import { KubernetesManifest } from 'aws-cdk-lib/aws-eks';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import { KubectlV28Layer } from '@aws-cdk/lambda-layer-kubectl-v28';
-import * as fs from 'fs';
-import * as path from 'path';
-import * as yaml from 'js-yaml';
 
 export interface EksOperatorsCdkStackProps extends cdk.StackProps {
   readonly createCluster: boolean;
@@ -70,28 +67,7 @@ export class EksOperatorsCdkStack extends cdk.Stack {
         instanceTypes: [ new cdk.aws_ec2.InstanceType('t3.medium') ],
       });
 
-      // Pre-install ACK CRDs in manageable chunks, sequentially to avoid Lambda rate limits
-      const crdsPath = path.join(__dirname, '..', 'ack-crds.yaml');
-      const crdsYaml = fs.readFileSync(crdsPath, 'utf8');
-      const allDocs = yaml.loadAll(crdsYaml) as any[];
-      const chunkSize = 20; // larger chunk size to reduce number of manifests
-      const crdManifests: eks.KubernetesManifest[] = [];
-      for (let i = 0; i < allDocs.length; i += chunkSize) {
-        const group = allDocs.slice(i, i + chunkSize);
-        const manifest = cluster.addManifest(
-          `AckControllersCRDsPart${Math.floor(i / chunkSize)}`,
-          ...group
-        );
-        crdManifests.push(manifest);
-      }
-      // Chain dependencies so they apply one after another
-      for (let i = 1; i < crdManifests.length; i++) {
-        crdManifests[i].node.addDependency(crdManifests[i - 1]);
-      }
-
       // Ensure Helm charts apply after CRDs
-      const lastCrdManifest = crdManifests[crdManifests.length - 1];
-
       // 5) Install SageMaker ACK Controller via Helm
       const ackSageMaker = new eks.HelmChart(this, 'ACKSageMaker', {
         cluster,
@@ -105,7 +81,6 @@ export class EksOperatorsCdkStack extends cdk.Stack {
         atomic: false,
         timeout: cdk.Duration.minutes(15),
       });
-      ackSageMaker.node.addDependency(lastCrdManifest);
 
       // 6) Install S3 ACK Controller via Helm
       const ackS3 = new eks.HelmChart(this, 'ACKS3', {
@@ -120,7 +95,6 @@ export class EksOperatorsCdkStack extends cdk.Stack {
         atomic: false,
         timeout: cdk.Duration.minutes(15),
       });
-      ackS3.node.addDependency(lastCrdManifest);
 
       // 5) Example SageMaker TrainingJob CR and 6) Example Bedrock InferenceJob CR combined
       const trainingJobObject = {

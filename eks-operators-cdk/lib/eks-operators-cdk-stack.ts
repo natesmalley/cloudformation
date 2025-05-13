@@ -1,4 +1,3 @@
-//lib/eks-operators-cdk-stack.ts
 import { Construct } from 'constructs';
 import * as cdk from 'aws-cdk-lib';
 import * as eks from 'aws-cdk-lib/aws-eks';
@@ -111,188 +110,202 @@ export class EksOperatorsCdkStack extends cdk.Stack {
         timeout: cdk.Duration.minutes(15),
       });
 
-      // 5) Example SageMaker TrainingJob CR
-      const trainingJobManifest = new eks.KubernetesManifest(this, 'ExampleTrainingJob', {
-        cluster,
-        manifest: [
-          {
-            apiVersion: 'sagemaker.services.k8s.aws/v1alpha1',
-            kind:       'TrainingJob',
-            metadata:   { name: 'example-training-job', namespace: 'default' },
-            spec: {
-              trainingJobName: 'example-job',
-              algorithmSpecification: {
-                trainingImage: '382416733822.dkr.ecr.us-east-2.amazonaws.com/linear-learner:latest',
-                trainingInputMode: 'File'
-              },
-              roleArn: cluster.kubectlRole!.roleArn,
-              inputDataConfig: [{
-                channelName: 'train',
-                dataSource: {
-                  s3DataSource: {
-                    s3Uri: 's3://bucket/path/train/',
-                    s3DataType: 'S3Prefix'
+      // 5) Example SageMaker TrainingJob CR and 6) Example Bedrock InferenceJob CR combined
+      const trainingJobObject = {
+        apiVersion: 'sagemaker.services.k8s.aws/v1alpha1',
+        kind:       'TrainingJob',
+        metadata:   { name: 'example-training-job', namespace: 'default' },
+        spec: {
+          trainingJobName: 'example-job',
+          algorithmSpecification: {
+            trainingImage: '382416733822.dkr.ecr.us-east-2.amazonaws.com/linear-learner:latest',
+            trainingInputMode: 'File'
+          },
+          roleArn: cluster.kubectlRole!.roleArn,
+          inputDataConfig: [{
+            channelName: 'train',
+            dataSource: {
+              s3DataSource: {
+                s3Uri: 's3://bucket/path/train/',
+                s3DataType: 'S3Prefix'
+              }
+            }
+          }],
+          outputDataConfig: {
+            s3OutputPath: 's3://bucket/path/output/'
+          },
+          resourceConfig: {
+            instanceCount: 1,
+            instanceType: 'ml.t2.medium',
+            volumeSizeInGB: 10
+          },
+          stoppingCondition: {
+            maxRuntimeInSeconds: 3600
+          }
+        }
+      };
+      const inferenceJobObject = {
+        apiVersion: 'bedrock.services.k8s.aws/v1alpha1',
+        kind:       'InferenceJob',
+        metadata:   { name: 'example-inference-job', namespace: 'default' },
+        spec: {
+          jobName: 'example-inference',
+          roleArn: cluster.kubectlRole!.roleArn,
+          model: {
+            modelId: 'anthropic.claude-v1'
+          },
+          inferenceUnits: 1,
+          input: {
+            inputText: 'Hello, world!'
+          }
+        }
+      };
+      const exampleJobsManifest = cluster.addManifest('ExampleJobs', [
+        trainingJobObject,
+        inferenceJobObject
+      ]);
+      exampleJobsManifest.node.addDependency(ackSageMaker);
+      exampleJobsManifest.node.addDependency(ackS3);
+
+      // 7) Combine Bedrock Deployment and Service manifests
+      const bedrockSampleManifest = cluster.addManifest('BedrockSample', [
+        {
+          apiVersion: 'apps/v1',
+          kind: 'Deployment',
+          metadata: { name: 'bedrock-sample', namespace: 'default' },
+          spec: {
+            replicas: 1,
+            selector: { matchLabels: { app: 'bedrock-sample' } },
+            template: {
+              metadata: { labels: { app: 'bedrock-sample' } },
+              spec: {
+                containers: [{
+                  name: 'bedrock-sample',
+                  image: 'public.ecr.aws/aws-containers/bedrock-sample:latest',
+                  ports: [{ containerPort: 8080 }]
+                }]
+              }
+            }
+          }
+        },
+        {
+          apiVersion: 'v1',
+          kind: 'Service',
+          metadata: { name: 'bedrock-sample', namespace: 'default' },
+          spec: {
+            type: 'LoadBalancer',
+            ports: [{ port: 80, targetPort: 8080, protocol: 'TCP', name: 'http' }],
+            selector: { app: 'bedrock-sample' }
+          }
+        }
+      ]);
+      bedrockSampleManifest.node.addDependency(ackSageMaker);
+      bedrockSampleManifest.node.addDependency(ackS3);
+
+      // 8) Combine DVWA StatefulSet, Service, Deployment, and Service manifests
+      const dvwaAllManifest = cluster.addManifest('DvwaAll', [
+        {
+          apiVersion: 'apps/v1',
+          kind: 'StatefulSet',
+          metadata: { name: 'dvwa-db', labels: { app: 'dvwa', component: 'mysql' }, namespace: 'default' },
+          spec: {
+            serviceName: 'dvwa-db',
+            replicas: 1,
+            selector: { matchLabels: { app: 'dvwa', component: 'mysql' } },
+            template: {
+              metadata: { labels: { app: 'dvwa', component: 'mysql' } },
+              spec: {
+                containers: [{
+                  name: 'mysql',
+                  image: 'mysql:5.7',
+                  ports: [{ name: 'mysql', containerPort: 3306 }],
+                  env: [
+                    { name: 'MYSQL_ROOT_PASSWORD', value: 'p@ssw0rd' },
+                    { name: 'MYSQL_DATABASE', value: 'dvwa' },
+                    { name: 'MYSQL_USER', value: 'dvwa' },
+                    { name: 'MYSQL_PASSWORD', value: 'p@ssw0rd' }
+                  ],
+                  readinessProbe: {
+                    exec: { command: ['sh','-c','mysqladmin ping -h 127.0.0.1 -u dvwa -pp@ssw0rd'] },
+                    initialDelaySeconds: 20,
+                    periodSeconds: 10
+                  },
+                  livenessProbe: {
+                    exec: { command: ['sh','-c','mysqladmin ping -h 127.0.0.1 -u dvwa -pp@ssw0rd'] },
+                    initialDelaySeconds: 30,
+                    periodSeconds: 10
+                  },
+                  volumeMounts: [{ name: 'db-data', mountPath: '/var/lib/mysql' }]
+                }]
+              }
+            },
+            volumeClaimTemplates: [{
+              metadata: { name: 'db-data' },
+              spec: {
+                accessModes: ['ReadWriteOnce'],
+                resources: { requests: { storage: '5Gi' } }
+              }
+            }]
+          }
+        },
+        {
+          apiVersion: 'v1',
+          kind: 'Service',
+          metadata: { name: 'dvwa-db', labels: { app: 'dvwa', component: 'mysql' }, namespace: 'default' },
+          spec: {
+            type: 'ClusterIP',
+            ports: [{ port: 3306, targetPort: 'mysql', name: 'mysql' }],
+            selector: { app: 'dvwa', component: 'mysql' }
+          }
+        },
+        {
+          apiVersion: 'apps/v1',
+          kind: 'Deployment',
+          metadata: { name: 'dvwa', namespace: 'default' },
+          spec: {
+            replicas: 2,
+            selector: { matchLabels: { app: 'dvwa' } },
+            template: {
+              metadata: { labels: { app: 'dvwa' } },
+              spec: {
+                containers: [{
+                  name: 'dvwa',
+                  image: 'vulnerables/web-dvwa:latest',
+                  ports: [{ containerPort: 80 }],
+                  env: [
+                    { name: 'MYSQL_HOST', value: 'dvwa-db' },
+                    { name: 'MYSQL_USER', value: 'dvwa' },
+                    { name: 'MYSQL_PASSWORD', value: 'p@ssw0rd' },
+                    { name: 'MYSQL_DBNAME', value: 'dvwa' }
+                  ],
+                  readinessProbe: {
+                    httpGet: { path: '/login.php', port: 80 },
+                    initialDelaySeconds: 10,
+                    periodSeconds: 5
+                  },
+                  livenessProbe: {
+                    httpGet: { path: '/login.php', port: 80 },
+                    initialDelaySeconds: 20,
+                    periodSeconds: 10
                   }
-                }
-              }],
-              outputDataConfig: {
-                s3OutputPath: 's3://bucket/path/output/'
-              },
-              resourceConfig: {
-                instanceCount: 1,
-                instanceType: 'ml.t2.medium',
-                volumeSizeInGB: 10
-              },
-              stoppingCondition: {
-                maxRuntimeInSeconds: 3600
+                }]
               }
             }
           }
-        ]
-      });
-      trainingJobManifest.node.addDependency(ackSageMaker);
-      trainingJobManifest.node.addDependency(ackS3);
-
-      // 6) Example Bedrock InferenceJob CR
-      const inferenceJobManifest = new eks.KubernetesManifest(this, 'ExampleInferenceJob', {
-        cluster,
-        manifest: [
-          {
-            apiVersion: 'bedrock.services.k8s.aws/v1alpha1',
-            kind:       'InferenceJob',
-            metadata:   { name: 'example-inference-job', namespace: 'default' },
-            spec: {
-              jobName: 'example-inference',
-              roleArn: cluster.kubectlRole!.roleArn,
-              model: {
-                modelId: 'anthropic.claude-v1'
-              },
-              inferenceUnits: 1,
-              input: {
-                inputText: 'Hello, world!'
-              }
-            }
+        },
+        {
+          apiVersion: 'v1',
+          kind: 'Service',
+          metadata: { name: 'dvwa', namespace: 'default' },
+          spec: {
+            type: 'LoadBalancer',
+            ports: [{ port: 80, targetPort: 80, protocol: 'TCP', name: 'http' }],
+            selector: { app: 'dvwa' }
           }
-        ]
-      });
-      inferenceJobManifest.node.addDependency(ackSageMaker);
-      inferenceJobManifest.node.addDependency(ackS3);
-      
-      // 8) Deploy DVWA MySQL StatefulSet and Service
-      const dvwaDbManifest = new eks.KubernetesManifest(this, 'DvwaDbManifest', {
-        cluster,
-        manifest: [
-          {
-            apiVersion: 'apps/v1',
-            kind: 'StatefulSet',
-            metadata: { name: 'dvwa-db', labels: { app: 'dvwa', component: 'mysql' }, namespace: 'default' },
-            spec: {
-              serviceName: 'dvwa-db',
-              replicas: 1,
-              selector: { matchLabels: { app: 'dvwa', component: 'mysql' } },
-              template: {
-                metadata: { labels: { app: 'dvwa', component: 'mysql' } },
-                spec: {
-                  containers: [{
-                    name: 'mysql',
-                    image: 'mysql:5.7',
-                    ports: [{ name: 'mysql', containerPort: 3306 }],
-                    env: [
-                      { name: 'MYSQL_ROOT_PASSWORD', value: 'p@ssw0rd' },
-                      { name: 'MYSQL_DATABASE', value: 'dvwa' },
-                      { name: 'MYSQL_USER', value: 'dvwa' },
-                      { name: 'MYSQL_PASSWORD', value: 'p@ssw0rd' }
-                    ],
-                    readinessProbe: {
-                      exec: { command: ['sh','-c','mysqladmin ping -h 127.0.0.1 -u dvwa -pp@ssw0rd'] },
-                      initialDelaySeconds: 20,
-                      periodSeconds: 10
-                    },
-                    livenessProbe: {
-                      exec: { command: ['sh','-c','mysqladmin ping -h 127.0.0.1 -u dvwa -pp@ssw0rd'] },
-                      initialDelaySeconds: 30,
-                      periodSeconds: 10
-                    },
-                    volumeMounts: [{ name: 'db-data', mountPath: '/var/lib/mysql' }]
-                  }]
-                }
-              },
-              volumeClaimTemplates: [{
-                metadata: { name: 'db-data' },
-                spec: {
-                  accessModes: ['ReadWriteOnce'],
-                  resources: { requests: { storage: '5Gi' } }
-                }
-              }]
-            }
-          },
-          {
-            apiVersion: 'v1',
-            kind: 'Service',
-            metadata: { name: 'dvwa-db', labels: { app: 'dvwa', component: 'mysql' }, namespace: 'default' },
-            spec: {
-              type: 'ClusterIP',
-              ports: [{ port: 3306, targetPort: 'mysql', name: 'mysql' }],
-              selector: { app: 'dvwa', component: 'mysql' }
-            }
-          }
-        ]
-      });
-      dvwaDbManifest.node.addDependency(ackSageMaker);
-      dvwaDbManifest.node.addDependency(ackS3);
-
-      // 9) Deploy DVWA application Deployment and Service
-      const dvwaAppManifest = new eks.KubernetesManifest(this, 'DvwaAppManifest', {
-        cluster,
-        manifest: [
-          {
-            apiVersion: 'apps/v1',
-            kind: 'Deployment',
-            metadata: { name: 'dvwa', namespace: 'default' },
-            spec: {
-              replicas: 2,
-              selector: { matchLabels: { app: 'dvwa' } },
-              template: {
-                metadata: { labels: { app: 'dvwa' } },
-                spec: {
-                  containers: [{
-                    name: 'dvwa',
-                    image: 'vulnerables/web-dvwa:latest',
-                    ports: [{ containerPort: 80 }],
-                    env: [
-                      { name: 'MYSQL_HOST', value: 'dvwa-db' },
-                      { name: 'MYSQL_USER', value: 'dvwa' },
-                      { name: 'MYSQL_PASSWORD', value: 'p@ssw0rd' },
-                      { name: 'MYSQL_DBNAME', value: 'dvwa' }
-                    ],
-                    readinessProbe: {
-                      httpGet: { path: '/login.php', port: 80 },
-                      initialDelaySeconds: 10,
-                      periodSeconds: 5
-                    },
-                    livenessProbe: {
-                      httpGet: { path: '/login.php', port: 80 },
-                      initialDelaySeconds: 20,
-                      periodSeconds: 10
-                    }
-                  }]
-                }
-              }
-            }
-          },
-          {
-            apiVersion: 'v1',
-            kind: 'Service',
-            metadata: { name: 'dvwa', namespace: 'default' },
-            spec: {
-              type: 'LoadBalancer',
-              ports: [{ port: 80, targetPort: 80, protocol: 'TCP', name: 'http' }],
-              selector: { app: 'dvwa' }
-            }
-          }
-        ]
-      });
-      dvwaAppManifest.node.addDependency(dvwaDbManifest);
+        }
+      ]);
+      dvwaAllManifest.node.addDependency(ackSageMaker);
+      dvwaAllManifest.node.addDependency(ackS3);
     }
   }
 }

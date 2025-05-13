@@ -4,6 +4,9 @@ import { Construct } from 'constructs';
 import * as eks from 'aws-cdk-lib/aws-eks';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import { KubectlV28Layer } from '@aws-cdk/lambda-layer-kubectl-v28';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as yaml from 'js-yaml';
 
 export interface EksOperatorsCdkStackProps extends cdk.StackProps {
   readonly createCluster: boolean;
@@ -25,17 +28,28 @@ export class EksOperatorsCdkStack extends cdk.Stack {
     });
 
     if (props.createCluster) {
-      // 2) Kubectl Layer (for custom-resources & Helm provider lambdas)
+      // 2b) Kubectl Layer (for custom-resources & Helm provider lambdas)
       const kubectlLayer = new KubectlV28Layer(this, 'KubectlLayer');
 
       // 3) EKS cluster itself (no default compute)
       const cluster = new eks.Cluster(this, 'EksCluster', {
         clusterName: props.eksClusterName,
         vpc,
+        placeClusterHandlerInVpc: false,
         version: eks.KubernetesVersion.V1_28,
         defaultCapacity: 0,
         kubectlLayer,
       });
+
+      // 2a) Create a Kubernetes ServiceAccount with IRSA for Bedrock
+      const bedrockSa = cluster.addServiceAccount('BedrockServiceAccount', {
+        name: 'bedrock-sa',
+        namespace: 'default',
+      });
+      // Attach the AmazonBedrockFullAccess managed policy to the SA's IAM role
+      bedrockSa.role.addManagedPolicy(
+        iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonBedrockFullAccess')
+      );
 
       // Allow the Testing_acct IAM role to assume and administer the cluster via kubectl
       const testingRole = iam.Role.fromRoleArn(this, 'TestingRole', 'arn:aws:iam::307946665489:role/YourTestingRole');
@@ -49,17 +63,25 @@ export class EksOperatorsCdkStack extends cdk.Stack {
         instanceTypes: [ new ec2.InstanceType('t3.medium') ],
       });
 
+      // Pre-install ACK CRDs from YAML
+      const crdsPath = path.join(__dirname, '..', 'ack-crds.yaml');
+      const crdsYaml = fs.readFileSync(crdsPath, 'utf8');
+      const crdDocs = yaml.loadAll(crdsYaml) as any[];
+      cluster.addManifest('AckControllersCRDs', ...crdDocs);
+
       // 5) Install ACK controllers via Helm
       const ack = new eks.HelmChart(this, 'ACKControllers', {
         cluster,
-        chart:      'ack-chart',
-        version:    '46.24.0',
-        release:    'ack-controllers',
+        chart: 'ack-chart',
+        version: '46.24.0',
+        release: 'ack-controllers',
         repository: 'oci://public.ecr.aws/aws-controllers-k8s/ack-chart',
-        namespace:  'ack-system',
+        namespace: 'ack-system',
         createNamespace: true,
+        skipCrds: false,
         wait: true,
-        timeout: cdk.Duration.minutes(5),
+        atomic: true,
+        timeout: cdk.Duration.minutes(10),
         values: {
           sagemaker: {
             enabled: true,
@@ -92,7 +114,7 @@ export class EksOperatorsCdkStack extends cdk.Stack {
         }
       });
 
-      // 6) Example SageMaker TrainingJob CR
+      // 5) Example SageMaker TrainingJob CR
       const trainingJobManifest = new eks.KubernetesManifest(this, 'ExampleTrainingJob', {
         cluster,
         manifest: [
@@ -133,7 +155,7 @@ export class EksOperatorsCdkStack extends cdk.Stack {
       });
       trainingJobManifest.node.addDependency(ack);
 
-      // 7) Example Bedrock InferenceJob CR
+      // 6) Example Bedrock InferenceJob CR
       const inferenceJobManifest = new eks.KubernetesManifest(this, 'ExampleInferenceJob', {
         cluster,
         manifest: [
@@ -156,6 +178,39 @@ export class EksOperatorsCdkStack extends cdk.Stack {
         ]
       });
       inferenceJobManifest.node.addDependency(ack);
+      
+      // 7) Deploy Bedrock sample application
+      cluster.addManifest('BedrockSampleDeployment', {
+        apiVersion: 'apps/v1',
+        kind: 'Deployment',
+        metadata: { name: 'bedrock-sample', namespace: 'default' },
+        spec: {
+          replicas: 2,
+          selector: { matchLabels: { app: 'bedrock-sample' } },
+          template: {
+            metadata: { labels: { app: 'bedrock-sample' } },
+            spec: {
+              serviceAccountName: bedrockSa.serviceAccountName,
+              containers: [{
+                name: 'bedrock-sample',
+                image: `${this.account}.dkr.ecr.${this.region}.amazonaws.com/bedrock-sample:latest`,
+                ports: [{ containerPort: 8080 }],
+                env: [{ name: 'BEDROCK_MODEL_ID', value: 'anthropic.claude-v1' }]
+              }]
+            }
+          }
+        }
+      });
+      cluster.addManifest('BedrockSampleService', {
+        apiVersion: 'v1',
+        kind: 'Service',
+        metadata: { name: 'bedrock-sample', namespace: 'default' },
+        spec: {
+          type: 'LoadBalancer',
+          selector: { app: 'bedrock-sample' },
+          ports: [{ port: 80, targetPort: 8080 }]
+        }
+      });
       
       // 8) Deploy DVWA MySQL StatefulSet and Service
       const dvwaDbManifest = new eks.KubernetesManifest(this, 'DvwaDbManifest', {

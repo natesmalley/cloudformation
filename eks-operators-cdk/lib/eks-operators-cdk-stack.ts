@@ -68,33 +68,66 @@ export class EksOperatorsCdkStack extends cdk.Stack {
       });
 
       // Ensure Helm charts apply after CRDs
+      // Create ack-sagemaker namespace
+      const ackSageMakerNs = cluster.addManifest('AckSageMakerNamespace', {
+        apiVersion: 'v1',
+        kind: 'Namespace',
+        metadata: { name: 'ack-sagemaker' }
+      });
+
       // 5) Install SageMaker ACK Controller via Helm
       const ackSageMaker = new eks.HelmChart(this, 'ACKSageMaker', {
         cluster,
         chart: 'sagemaker-chart',
-        version: '1.2.17',
+        version: '1.2.16',
         repository: 'oci://public.ecr.aws/aws-controllers-k8s/sagemaker-chart',
         namespace: 'ack-sagemaker',
         createNamespace: true,
         skipCrds: false,
         wait: true,
-        atomic: false,
+        atomic: true,
         timeout: cdk.Duration.minutes(15),
       });
+
+      // 5a) Cleanup any stuck Helm release before SageMaker install
+      const cleanupSageMaker = cluster.addManifest('CleanupSageMaker', {
+        apiVersion: 'batch/v1',
+        kind: 'Job',
+        metadata: { name: 'cleanup-sagemaker', namespace: 'ack-sagemaker' },
+        spec: {
+          template: {
+            spec: {
+              containers: [{
+                name: 'kubectl',
+                image: 'bitnami/kubectl:latest',
+                command: [
+                  'sh','-c',
+                  'kubectl delete secret sh.helm.release.v1.ACKSageMaker.v* --ignore-not-found'
+                ]
+              }],
+              restartPolicy: 'OnFailure'
+            }
+          }
+        }
+      });
+      cleanupSageMaker.node.addDependency(ackSageMakerNs);
+      ackSageMaker.node.addDependency(cleanupSageMaker);
+      ackSageMaker.node.addDependency(ackSageMakerNs);
 
       // 6) Install S3 ACK Controller via Helm
       const ackS3 = new eks.HelmChart(this, 'ACKS3', {
         cluster,
         chart: 's3-chart',
-        version: '1.4.4',
+        version: '1.0.28',
         repository: 'oci://public.ecr.aws/aws-controllers-k8s/s3-chart',
         namespace: 'ack-s3',
         createNamespace: true,
         skipCrds: false,
         wait: true,
-        atomic: false,
+        atomic: true,
         timeout: cdk.Duration.minutes(15),
       });
+      ackS3.node.addDependency(ackSageMaker);
 
       // 5) Example SageMaker TrainingJob CR and 6) Example Bedrock InferenceJob CR combined
       const trainingJobObject = {

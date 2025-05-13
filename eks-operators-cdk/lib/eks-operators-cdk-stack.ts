@@ -1,8 +1,8 @@
-import * as iam from 'aws-cdk-lib/aws-iam';
-import * as cdk from 'aws-cdk-lib';
+//lib/eks-operators-cdk-stack.ts
 import { Construct } from 'constructs';
+import * as cdk from 'aws-cdk-lib';
 import * as eks from 'aws-cdk-lib/aws-eks';
-import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import { KubectlV28Layer } from '@aws-cdk/lambda-layer-kubectl-v28';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -18,17 +18,16 @@ export class EksOperatorsCdkStack extends cdk.Stack {
     super(scope, id, props);
 
     // 1) Auto-create a VPC in two AZs, with public & private subnets
-    const vpc = new ec2.Vpc(this, 'Vpc', {
+    const vpc = new cdk.aws_ec2.Vpc(this, 'Vpc', {
       maxAzs: 2,
       natGateways: 1,
       subnetConfiguration: [
-        { name: 'Public',  subnetType: ec2.SubnetType.PUBLIC,      cidrMask: 24 },
-        { name: 'Private', subnetType: ec2.SubnetType.PRIVATE_WITH_NAT, cidrMask: 24 },
+        { name: 'Public',  subnetType: cdk.aws_ec2.SubnetType.PUBLIC,      cidrMask: 24 },
+        { name: 'Private', subnetType: cdk.aws_ec2.SubnetType.PRIVATE_WITH_NAT, cidrMask: 24 },
       ],
     });
 
     if (props.createCluster) {
-      // 2b) Kubectl Layer (for custom-resources & Helm provider lambdas)
       const kubectlLayer = new KubectlV28Layer(this, 'KubectlLayer');
 
       // 3) EKS cluster itself (no default compute)
@@ -36,17 +35,25 @@ export class EksOperatorsCdkStack extends cdk.Stack {
         clusterName: props.eksClusterName,
         vpc,
         placeClusterHandlerInVpc: false,
+        kubectlLayer,
         version: eks.KubernetesVersion.V1_28,
         defaultCapacity: 0,
-        kubectlLayer,
       });
 
-      // 2a) Create a Kubernetes ServiceAccount with IRSA for Bedrock
+      // Attach additional IAM policies to the Helm provider role
+      if (cluster.kubectlRole) {
+        cluster.kubectlRole.addManagedPolicy(
+          iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonElasticContainerRegistryPublicReadOnly')
+        );
+        cluster.kubectlRole.addManagedPolicy(
+          iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonEKSClusterPolicy')
+        );
+      }
+
       const bedrockSa = cluster.addServiceAccount('BedrockServiceAccount', {
         name: 'bedrock-sa',
         namespace: 'default',
       });
-      // Attach the AmazonBedrockFullAccess managed policy to the SA's IAM role
       bedrockSa.role.addManagedPolicy(
         iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonBedrockFullAccess')
       );
@@ -60,58 +67,48 @@ export class EksOperatorsCdkStack extends cdk.Stack {
         desiredSize: 2,
         maxSize:     2,
         minSize:     2,
-        instanceTypes: [ new ec2.InstanceType('t3.medium') ],
+        instanceTypes: [ new cdk.aws_ec2.InstanceType('t3.medium') ],
       });
 
-      // Pre-install ACK CRDs from YAML
+      // Pre-install ACK CRDs in manageable chunks (avoid Lambda 256 KB limit)
       const crdsPath = path.join(__dirname, '..', 'ack-crds.yaml');
       const crdsYaml = fs.readFileSync(crdsPath, 'utf8');
-      const crdDocs = yaml.loadAll(crdsYaml) as any[];
-      cluster.addManifest('AckControllersCRDs', ...crdDocs);
+      const allDocs = yaml.loadAll(crdsYaml) as any[];
+      const chunkSize = 10; // adjust if needed
+      for (let i = 0; i < allDocs.length; i += chunkSize) {
+        const group = allDocs.slice(i, i + chunkSize);
+        cluster.addManifest(
+          `AckControllersCRDsPart${Math.floor(i / chunkSize)}`,
+          ...group
+        );
+      }
 
-      // 5) Install ACK controllers via Helm
-      const ack = new eks.HelmChart(this, 'ACKControllers', {
+      // 5) Install SageMaker ACK Controller via Helm
+      const ackSageMaker = new eks.HelmChart(this, 'ACKSageMaker', {
         cluster,
-        chart: 'ack-chart',
-        version: '46.24.0',
-        release: 'ack-controllers',
-        repository: 'oci://public.ecr.aws/aws-controllers-k8s/ack-chart',
-        namespace: 'ack-system',
+        chart: 'sagemaker-chart',
+        version: '1.2.17',
+        repository: 'oci://public.ecr.aws/aws-controllers-k8s/sagemaker-chart',
+        namespace: 'ack-sagemaker',
         createNamespace: true,
         skipCrds: false,
         wait: true,
-        atomic: true,
-        timeout: cdk.Duration.minutes(10),
-        values: {
-          sagemaker: {
-            enabled: true,
-            aws: {
-              region: this.region,
-              accountId: this.account,
-            },
-            serviceAccount: {
-              create: false,
-              name: 'sagemaker-k8s-operator',
-              annotations: {
-                'eks.amazonaws.com/role-arn': cluster.kubectlRole!.roleArn
-              }
-            }
-          },
-          bedrock: {
-            enabled: true,
-            aws: {
-              region: this.region,
-              accountId: this.account,
-            },
-            serviceAccount: {
-              create: false,
-              name: 'bedrock-k8s-operator',
-              annotations: {
-                'eks.amazonaws.com/role-arn': cluster.kubectlRole!.roleArn
-              }
-            }
-          }
-        }
+        atomic: false,
+        timeout: cdk.Duration.minutes(15),
+      });
+
+      // 6) Install S3 ACK Controller via Helm
+      const ackS3 = new eks.HelmChart(this, 'ACKS3', {
+        cluster,
+        chart: 's3-chart',
+        version: '1.4.4',
+        repository: 'oci://public.ecr.aws/aws-controllers-k8s/s3-chart',
+        namespace: 'ack-s3',
+        createNamespace: true,
+        skipCrds: false,
+        wait: true,
+        atomic: false,
+        timeout: cdk.Duration.minutes(15),
       });
 
       // 5) Example SageMaker TrainingJob CR
@@ -153,7 +150,8 @@ export class EksOperatorsCdkStack extends cdk.Stack {
           }
         ]
       });
-      trainingJobManifest.node.addDependency(ack);
+      trainingJobManifest.node.addDependency(ackSageMaker);
+      trainingJobManifest.node.addDependency(ackS3);
 
       // 6) Example Bedrock InferenceJob CR
       const inferenceJobManifest = new eks.KubernetesManifest(this, 'ExampleInferenceJob', {
@@ -177,40 +175,8 @@ export class EksOperatorsCdkStack extends cdk.Stack {
           }
         ]
       });
-      inferenceJobManifest.node.addDependency(ack);
-      
-      // 7) Deploy Bedrock sample application
-      cluster.addManifest('BedrockSampleDeployment', {
-        apiVersion: 'apps/v1',
-        kind: 'Deployment',
-        metadata: { name: 'bedrock-sample', namespace: 'default' },
-        spec: {
-          replicas: 2,
-          selector: { matchLabels: { app: 'bedrock-sample' } },
-          template: {
-            metadata: { labels: { app: 'bedrock-sample' } },
-            spec: {
-              serviceAccountName: bedrockSa.serviceAccountName,
-              containers: [{
-                name: 'bedrock-sample',
-                image: `${this.account}.dkr.ecr.${this.region}.amazonaws.com/bedrock-sample:latest`,
-                ports: [{ containerPort: 8080 }],
-                env: [{ name: 'BEDROCK_MODEL_ID', value: 'anthropic.claude-v1' }]
-              }]
-            }
-          }
-        }
-      });
-      cluster.addManifest('BedrockSampleService', {
-        apiVersion: 'v1',
-        kind: 'Service',
-        metadata: { name: 'bedrock-sample', namespace: 'default' },
-        spec: {
-          type: 'LoadBalancer',
-          selector: { app: 'bedrock-sample' },
-          ports: [{ port: 80, targetPort: 8080 }]
-        }
-      });
+      inferenceJobManifest.node.addDependency(ackSageMaker);
+      inferenceJobManifest.node.addDependency(ackS3);
       
       // 8) Deploy DVWA MySQL StatefulSet and Service
       const dvwaDbManifest = new eks.KubernetesManifest(this, 'DvwaDbManifest', {
@@ -272,7 +238,8 @@ export class EksOperatorsCdkStack extends cdk.Stack {
           }
         ]
       });
-      dvwaDbManifest.node.addDependency(ack);
+      dvwaDbManifest.node.addDependency(ackSageMaker);
+      dvwaDbManifest.node.addDependency(ackS3);
 
       // 9) Deploy DVWA application Deployment and Service
       const dvwaAppManifest = new eks.KubernetesManifest(this, 'DvwaAppManifest', {

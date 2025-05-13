@@ -1,6 +1,0 @@
-{
-    "app": "node lib/main.js",
-    "context": {
-      "@aws-cdk/core:newStyleStackSynthesis": true
-    }
-  }

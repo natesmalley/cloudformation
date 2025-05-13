@@ -9,13 +9,18 @@ Parameters:
   CodeBucket:
     Type: String
     Description: S3 bucket that stores eks-blueprints-app.zip
+    Default: ""
   CodeKey:
     Type: String
     Description: Object key (path) of eks-blueprints-app.zip inside the bucket
+    Default: ""
   LambdaTimeout:
     Type: Number
     Default: 900
     Description: Lambda timeout in seconds (default 15 min)
+  CdkRunnerImageUri:
+    Type: String
+    Description: "ECR URI of the container image that runs `index.handler`"
 
 ###############################################################################
 # Lambda execution role
@@ -41,13 +46,13 @@ Resources:
   CdkRunnerFunction:
     Type: AWS::Lambda::Function
     Properties:
-      Runtime: nodejs18.x
-      Handler: index.handler
+      PackageType: Image
+      Architectures: ["x86_64"]
       Timeout: !Ref LambdaTimeout
+      MemorySize: 1024
       Role: !GetAtt CdkRunnerRole.Arn
       Code:
-        S3Bucket: !Ref CodeBucket
-        S3Key:    !Ref CodeKey
+        ImageUri: !Ref CdkRunnerImageUri
       Environment:
         Variables:
           # used by CDK app (bin/main.ts) at runtime

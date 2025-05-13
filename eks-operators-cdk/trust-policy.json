@@ -1,0 +1,15 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": [
+          "arn:aws:iam::307946665489:role/cdk-hnb659fds-deploy-role-307946665489-us-east-2",
+          "arn:aws:iam::307946665489:user/Testing_acct"
+        ]
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+Resources:
+  CDKMetadata:
+    Type: AWS::CDK::Metadata
+    Properties:
+      Analytics: v2:deflate64:H4sIAAAAAAAA/zPSM7Q00TNQTCwv1k1OydbNyUzSCy5JTM7WyctPSdXLKtYvMzLQswSqyCrOzNQtKs0rycxN1QuC0ABFGwp9PgAAAA==
+    Metadata:
+      aws:cdk:path: EksOperatorsCdkStack/CDKMetadata/Default
+Parameters:
+  BootstrapVersion:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /cdk-bootstrap/hnb659fds/version
+    Description: Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]
+

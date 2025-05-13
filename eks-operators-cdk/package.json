@@ -1,0 +1,27 @@
+{
+  "name": "eks-operators-cdk",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "synth": "cdk synth",
+    "deploy": "cdk deploy --require-approval never",
+    "test": "jest"
+  },
+  "dependencies": {
+    "@aws-cdk/lambda-layer-kubectl-v28": "^2.2.1",
+    "@aws-cdk/lambda-layer-kubectl-v32": "^2.1.0",
+    "aws-cdk-lib": "^2.195.0",
+    "constructs": "^10.4.2",
+    "js-yaml": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.14",
+    "@types/js-yaml": "^4.0.9",
+    "aws-cdk": "^2.0.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.3.2",
+    "ts-node": "^10.0.0",
+    "typescript": "^5.0.0"
+  }
+}

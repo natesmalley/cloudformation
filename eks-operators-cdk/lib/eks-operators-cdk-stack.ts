@@ -4,9 +4,6 @@ import * as eks from 'aws-cdk-lib/aws-eks';
 import { KubernetesManifest } from 'aws-cdk-lib/aws-eks';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import { KubectlV28Layer } from '@aws-cdk/lambda-layer-kubectl-v28';
-import * as lambda from 'aws-cdk-lib/aws-lambda';
-import * as cr from 'aws-cdk-lib/custom-resources';
-import * as path from 'path';
 
 export interface EksOperatorsCdkStackProps extends cdk.StackProps {
   readonly createCluster: boolean;
@@ -78,9 +75,39 @@ export class EksOperatorsCdkStack extends cdk.Stack {
         metadata: { name: 'ack-sagemaker' }
       });
 
+      // Lambda to clean up stuck Helm releases and release secrets for ACK controllers
+      // (This is a sample; in production, use a proper Lambda construct and permissions)
+      const cleanupAckSageMakerFn = new cdk.aws_lambda.Function(this, 'CleanupAckSageMakerFn', {
+        runtime: cdk.aws_lambda.Runtime.NODEJS_18_X,
+        handler: 'index.handler',
+        code: cdk.aws_lambda.Code.fromInline(`
+          const { execSync } = require('child_process');
+          exports.handler = async () => {
+            // Uninstall any stuck Helm releases to clear pending-install locks
+            try {
+              execSync('helm uninstall ack-sagemaker -n ack-sagemaker --wait --timeout 60s || true');
+            } catch (err) {
+              console.warn('Helm uninstall ack-sagemaker failed or no release:', err.message);
+            }
+            try {
+              execSync('helm uninstall ack-s3 -n ack-s3 --wait --timeout 60s || true');
+            } catch (err) {
+              console.warn('Helm uninstall ack-s3 failed or no release:', err.message);
+            }
+            // Remove any leftover Helm release secrets
+            execSync('kubectl delete secret sh.helm.release.v1.ack-sagemaker.* -n ack-sagemaker --ignore-not-found');
+            return { PhysicalResourceId: 'cleanup-ack-sagemaker' };
+          };
+        `),
+        timeout: cdk.Duration.minutes(2),
+        layers: [kubectlLayer],
+        environment: {},
+      });
+
       // 5) Install SageMaker ACK Controller via Helm
       const ackSageMaker = new eks.HelmChart(this, 'ACKSageMaker', {
         cluster,
+        release: 'ack-sagemaker',
         chart: 'sagemaker-chart',
         version: '1.2.16',
         repository: 'oci://public.ecr.aws/aws-controllers-k8s/sagemaker-chart',
@@ -91,29 +118,35 @@ export class EksOperatorsCdkStack extends cdk.Stack {
         atomic: true,
         timeout: cdk.Duration.minutes(15),
       });
+      ackSageMaker.node.addDependency(ackSageMakerNs);
 
-      // 5a) Lambda-backed cleanup of any stale SageMaker release secret
-      const cleanupFn = new lambda.Function(this, 'CleanupSageMakerFn', {
-        runtime: lambda.Runtime.NODEJS_18_X,
+      // 5a) Verify SageMaker controller deployment readiness
+      const checkSageMakerFn = new cdk.aws_lambda.Function(this, 'CheckAckSageMakerFn', {
+        runtime: cdk.aws_lambda.Runtime.NODEJS_18_X,
         handler: 'index.handler',
-        code: lambda.Code.fromAsset(path.join(__dirname, '../lambda/cleanup-sagemaker')),
-        timeout: cdk.Duration.minutes(2),
-        environment: {
-          NAMESPACE: 'ack-sagemaker',
-          SECRET_PREFIX: 'sh.helm.release.v1.ACKSageMaker'
-        }
+        code: cdk.aws_lambda.Code.fromInline(`
+          const { execSync } = require('child_process');
+          exports.handler = async () => {
+            // Wait for SageMaker ACK controller deployment to be ready
+            execSync('kubectl rollout status deployment ack-sagemaker-controller -n ack-sagemaker --timeout=300s');
+            return { PhysicalResourceId: 'check-ack-sagemaker' };
+          };
+        `),
+        layers: [kubectlLayer],
+        timeout: cdk.Duration.minutes(6),
       });
-      const cleanupProvider = new cr.Provider(this, 'CleanupProvider', {
-        onEventHandler: cleanupFn,
+      const checkSageMakerProvider = new cdk.custom_resources.Provider(this, 'CheckAckSageMakerProvider', {
+        onEventHandler: checkSageMakerFn,
       });
-      const cleanupRelease = new cdk.CustomResource(this, 'CleanupSageMaker', {
-        serviceToken: cleanupProvider.serviceToken,
+      const checkAckSageMaker = new cdk.CustomResource(this, 'CheckAckSageMaker', {
+        serviceToken: checkSageMakerProvider.serviceToken,
       });
-      ackSageMaker.node.addDependency(cleanupRelease);
+      checkAckSageMaker.node.addDependency(ackSageMaker);
 
       // 6) Install S3 ACK Controller via Helm
       const ackS3 = new eks.HelmChart(this, 'ACKS3', {
         cluster,
+        release: 'ack-s3',
         chart: 's3-chart',
         version: '1.0.28',
         repository: 'oci://public.ecr.aws/aws-controllers-k8s/s3-chart',
@@ -180,7 +213,6 @@ export class EksOperatorsCdkStack extends cdk.Stack {
         trainingJobObject,
         inferenceJobObject
       ]);
-      exampleJobsManifest.node.addDependency(ackSageMaker);
       exampleJobsManifest.node.addDependency(ackS3);
 
       // 7) Combine Bedrock Deployment and Service manifests

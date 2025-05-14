@@ -4,6 +4,9 @@ import * as eks from 'aws-cdk-lib/aws-eks';
 import { KubernetesManifest } from 'aws-cdk-lib/aws-eks';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import { KubectlV28Layer } from '@aws-cdk/lambda-layer-kubectl-v28';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as cr from 'aws-cdk-lib/custom-resources';
+import * as path from 'path';
 
 export interface EksOperatorsCdkStackProps extends cdk.StackProps {
   readonly createCluster: boolean;
@@ -89,30 +92,24 @@ export class EksOperatorsCdkStack extends cdk.Stack {
         timeout: cdk.Duration.minutes(15),
       });
 
-      // 5a) Cleanup any stuck Helm release before SageMaker install
-      const cleanupSageMaker = cluster.addManifest('CleanupSageMaker', {
-        apiVersion: 'batch/v1',
-        kind: 'Job',
-        metadata: { name: 'cleanup-sagemaker', namespace: 'ack-sagemaker' },
-        spec: {
-          template: {
-            spec: {
-              containers: [{
-                name: 'kubectl',
-                image: 'bitnami/kubectl:latest',
-                command: [
-                  'sh','-c',
-                  'kubectl delete secret sh.helm.release.v1.ACKSageMaker.v* --ignore-not-found'
-                ]
-              }],
-              restartPolicy: 'OnFailure'
-            }
-          }
+      // 5a) Lambda-backed cleanup of any stale SageMaker release secret
+      const cleanupFn = new lambda.Function(this, 'CleanupSageMakerFn', {
+        runtime: lambda.Runtime.NODEJS_18_X,
+        handler: 'index.handler',
+        code: lambda.Code.fromAsset(path.join(__dirname, '../lambda/cleanup-sagemaker')),
+        timeout: cdk.Duration.minutes(2),
+        environment: {
+          NAMESPACE: 'ack-sagemaker',
+          SECRET_PREFIX: 'sh.helm.release.v1.ACKSageMaker'
         }
       });
-      cleanupSageMaker.node.addDependency(ackSageMakerNs);
-      ackSageMaker.node.addDependency(cleanupSageMaker);
-      ackSageMaker.node.addDependency(ackSageMakerNs);
+      const cleanupProvider = new cr.Provider(this, 'CleanupProvider', {
+        onEventHandler: cleanupFn,
+      });
+      const cleanupRelease = new cdk.CustomResource(this, 'CleanupSageMaker', {
+        serviceToken: cleanupProvider.serviceToken,
+      });
+      ackSageMaker.node.addDependency(cleanupRelease);
 
       // 6) Install S3 ACK Controller via Helm
       const ackS3 = new eks.HelmChart(this, 'ACKS3', {

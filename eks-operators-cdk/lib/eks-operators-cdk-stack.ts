@@ -50,42 +50,53 @@ export class EksOperatorsCdkStack extends cdk.Stack {
       });
 
       // ---------------------------------------------------------------------------
-// 5) IRSA ServiceAccount for SageMaker ACK controller
-// ---------------------------------------------------------------------------
-const sageMakerSa = cluster.addServiceAccount('SageMakerSA', {
-  name:      'ack-sagemaker-controller',
-  namespace: 'ack-system',
-});
-sageMakerSa.role.addManagedPolicy(
-  iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonSageMakerFullAccess'),
-);
+      // 4a) Ensure the ack-system namespace exists before anything needs it
+      // ---------------------------------------------------------------------------
+      const ackSystemNs = cluster.addManifest('AckSystemNamespace', {
+        apiVersion: 'v1',
+        kind: 'Namespace',
+        metadata: { name: 'ack-system' },
+      });
 
-// ---------------------------------------------------------------------------
-// 6) In-cluster Job to remove any stuck Helm release or secret
-// ---------------------------------------------------------------------------
-const cleanupJob = cluster.addManifest('CleanupAckJob', {
-  apiVersion: 'batch/v1',
-  kind:       'Job',
-  metadata:   { name: 'cleanup-ack-sagemaker', namespace: 'ack-system' },
-  spec: {
-    backoffLimit: 1,
-    template: {
-      spec: {
-        serviceAccountName: sageMakerSa.serviceAccountName,
-        restartPolicy: 'Never',
-        containers: [{
-          name: 'cleanup',
-          image: 'bitnami/kubectl:latest',
-          command: ['sh','-c', `
-            helm uninstall ack-sagemaker -n ack-system --wait --timeout 120s || true
-            kubectl delete secret -n ack-system -l "owner=helm,name=ack-sagemaker" --ignore-not-found
-          `],
-        }],
-      },
-    },
-  },
-});
-cleanupJob.node.addDependency(sageMakerSa);
+      // ---------------------------------------------------------------------------
+      // 5) IRSA ServiceAccount for SageMaker ACK controller
+      // ---------------------------------------------------------------------------
+      const sageMakerSa = cluster.addServiceAccount('SageMakerSA', {
+        name:      'ack-sagemaker-controller',
+        namespace: 'ack-system',
+      });
+      sageMakerSa.role.addManagedPolicy(
+        iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonSageMakerFullAccess'),
+      );
+      sageMakerSa.node.addDependency(ackSystemNs);
+
+      // ---------------------------------------------------------------------------
+      // 6) In-cluster Job to remove any stuck Helm release or secret
+      // ---------------------------------------------------------------------------
+      const cleanupJob = cluster.addManifest('CleanupAckJob', {
+        apiVersion: 'batch/v1',
+        kind:       'Job',
+        metadata:   { name: 'cleanup-ack-sagemaker', namespace: 'ack-system' },
+        spec: {
+          backoffLimit: 1,
+          template: {
+            spec: {
+              serviceAccountName: sageMakerSa.serviceAccountName,
+              restartPolicy: 'Never',
+              containers: [{
+                name: 'cleanup',
+                image: 'bitnami/kubectl:latest',
+                command: ['sh','-c', `
+                  helm uninstall ack-sagemaker -n ack-system --wait --timeout 120s || true
+                  kubectl delete secret -n ack-system -l "owner=helm,name=ack-sagemaker" --ignore-not-found
+                `],
+              }],
+            },
+          },
+        },
+      });
+      cleanupJob.node.addDependency(sageMakerSa);
+      cleanupJob.node.addDependency(ackSystemNs);
 
 // ---------------------------------------------------------------------------
 // 7) SageMaker ACK controller Helm chart (atomic, wait)

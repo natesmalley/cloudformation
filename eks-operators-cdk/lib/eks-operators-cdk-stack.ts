@@ -49,113 +49,81 @@ export class EksOperatorsCdkStack extends cdk.Stack {
         instanceTypes: [ new ec2.InstanceType('t3.medium') ],
       });
 
-      // 5) Install ACK controllers via Helm
-      const ack = new eks.HelmChart(this, 'ACKControllers', {
-        cluster,
-        chart:      'ack-chart',
-        version:    '46.24.0',
-        release:    'ack-controllers',
-        repository: 'oci://public.ecr.aws/aws-controllers-k8s/ack-chart',
-        namespace:  'ack-system',
-        createNamespace: true,
-        wait: true,
-        timeout: cdk.Duration.minutes(5),
-        values: {
-          sagemaker: {
-            enabled: true,
-            aws: {
-              region: this.region,
-              accountId: this.account,
-            },
-            serviceAccount: {
-              create: false,
-              name: 'sagemaker-k8s-operator',
-              annotations: {
-                'eks.amazonaws.com/role-arn': cluster.kubectlRole!.roleArn
-              }
-            }
-          },
-          bedrock: {
-            enabled: true,
-            aws: {
-              region: this.region,
-              accountId: this.account,
-            },
-            serviceAccount: {
-              create: false,
-              name: 'bedrock-k8s-operator',
-              annotations: {
-                'eks.amazonaws.com/role-arn': cluster.kubectlRole!.roleArn
-              }
-            }
-          }
-        }
-      });
+      // ---------------------------------------------------------------------------
+// 5) IRSA ServiceAccount for SageMaker ACK controller
+// ---------------------------------------------------------------------------
+const sageMakerSa = cluster.addServiceAccount('SageMakerSA', {
+  name:      'ack-sagemaker-controller',
+  namespace: 'ack-system',
+});
+sageMakerSa.role.addManagedPolicy(
+  iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonSageMakerFullAccess'),
+);
 
-      // 6) Example SageMaker TrainingJob CR
-      const trainingJobManifest = new eks.KubernetesManifest(this, 'ExampleTrainingJob', {
-        cluster,
-        manifest: [
-          {
-            apiVersion: 'sagemaker.services.k8s.aws/v1alpha1',
-            kind:       'TrainingJob',
-            metadata:   { name: 'example-training-job', namespace: 'default' },
-            spec: {
-              trainingJobName: 'example-job',
-              algorithmSpecification: {
-                trainingImage: '382416733822.dkr.ecr.us-east-2.amazonaws.com/linear-learner:latest',
-                trainingInputMode: 'File'
-              },
-              roleArn: cluster.kubectlRole!.roleArn,
-              inputDataConfig: [{
-                channelName: 'train',
-                dataSource: {
-                  s3DataSource: {
-                    s3Uri: 's3://bucket/path/train/',
-                    s3DataType: 'S3Prefix'
-                  }
-                }
-              }],
-              outputDataConfig: {
-                s3OutputPath: 's3://bucket/path/output/'
-              },
-              resourceConfig: {
-                instanceCount: 1,
-                instanceType: 'ml.t2.medium',
-                volumeSizeInGB: 10
-              },
-              stoppingCondition: {
-                maxRuntimeInSeconds: 3600
-              }
-            }
-          }
-        ]
-      });
-      trainingJobManifest.node.addDependency(ack);
+// ---------------------------------------------------------------------------
+// 6) In-cluster Job to remove any stuck Helm release or secret
+// ---------------------------------------------------------------------------
+const cleanupJob = cluster.addManifest('CleanupAckJob', {
+  apiVersion: 'batch/v1',
+  kind:       'Job',
+  metadata:   { name: 'cleanup-ack-sagemaker', namespace: 'ack-system' },
+  spec: {
+    backoffLimit: 1,
+    template: {
+      spec: {
+        serviceAccountName: sageMakerSa.serviceAccountName,
+        restartPolicy: 'Never',
+        containers: [{
+          name: 'cleanup',
+          image: 'bitnami/kubectl:latest',
+          command: ['sh','-c', `
+            helm uninstall ack-sagemaker -n ack-system --wait --timeout 120s || true
+            kubectl delete secret -n ack-system -l "owner=helm,name=ack-sagemaker" --ignore-not-found
+          `],
+        }],
+      },
+    },
+  },
+});
+cleanupJob.node.addDependency(sageMakerSa);
 
-      // 7) Example Bedrock InferenceJob CR
-      const inferenceJobManifest = new eks.KubernetesManifest(this, 'ExampleInferenceJob', {
-        cluster,
-        manifest: [
-          {
-            apiVersion: 'bedrock.services.k8s.aws/v1alpha1',
-            kind:       'InferenceJob',
-            metadata:   { name: 'example-inference-job', namespace: 'default' },
-            spec: {
-              jobName: 'example-inference',
-              roleArn: cluster.kubectlRole!.roleArn,
-              model: {
-                modelId: 'anthropic.claude-v1'
-              },
-              inferenceUnits: 1,
-              input: {
-                inputText: 'Hello, world!'
-              }
-            }
-          }
-        ]
-      });
-      inferenceJobManifest.node.addDependency(ack);
+// ---------------------------------------------------------------------------
+// 7) SageMaker ACK controller Helm chart (atomic, wait)
+// ---------------------------------------------------------------------------
+const ackSageMaker = new eks.HelmChart(this, 'AckSageMaker', {
+  cluster,
+  release: 'ack-sagemaker',
+  chart:   'sagemaker-chart',
+  repository: 'oci://public.ecr.aws/aws-controllers-k8s/sagemaker-chart',
+  version: '1.2.16',
+  namespace: 'ack-system',
+  createNamespace: true,
+  atomic:  true,
+  wait:    true,
+  timeout: cdk.Duration.minutes(15),
+  values: {
+    aws: { region: this.region },
+    serviceAccount: {
+      create: false,
+      name:   sageMakerSa.serviceAccountName,
+      annotations: {
+        'eks.amazonaws.com/role-arn': sageMakerSa.role.roleArn,
+      },
+    },
+  },
+});
+ackSageMaker.node.addDependency(cleanupJob);
+
+// ---------------------------------------------------------------------------
+// 8) Example SageMaker TrainingJob CR (depends on controller)
+// ---------------------------------------------------------------------------
+// trainingJobManifest.node.addDependency(ackSageMaker);
+
+// ---------------------------------------------------------------------------
+// 9) Example Bedrock or DVWA manifests (if kept) also depend on controller
+// ---------------------------------------------------------------------------
+// inferenceJobManifest.node.addDependency(ackSageMaker);
+// dvwaAppDeployment?.node.addDependency(ackSageMaker); 
     }
   }
 }

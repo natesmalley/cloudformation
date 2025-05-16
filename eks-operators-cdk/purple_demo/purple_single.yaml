@@ -1,0 +1,306 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >
+  Purple-Demo – EKS cluster with SageMaker ACK controller (atomic Helm),
+  cleanup Job, and DVWA-ready node group – single-template version.
+
+Parameters:
+  ClusterName:
+    Type: String
+    Default: purple-demo
+  NodeInstanceType:
+    Type: String
+    Default: t3.medium
+  NodeDesiredCapacity:
+    Type: Number
+    Default: 3
+  VpcCidr:
+    Type: String
+    Default: 10.0.0.0/16
+  EksVersion:
+    Type: String
+    Default: "1.28"
+
+Mappings:
+  SubnetConfig:
+    PublicA:  { Cidr: "10.0.0.0/24", AZSuffix: "a" }
+    PublicB:  { Cidr: "10.0.1.0/24", AZSuffix: "b" }
+    PrivateA:  { Cidr: "10.0.10.0/24", AZSuffix: "a" }
+    PrivateB:  { Cidr: "10.0.11.0/24", AZSuffix: "b" }
+
+Resources:
+# ---------------------------------------------------------------------------
+# VPC with two AZs, 1 NAT GW
+# ---------------------------------------------------------------------------
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags: [{ Key: Name, Value: !Sub '${ClusterName}-Vpc' }]
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  AttachIg:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+  PublicRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  # Create four subnets + associations
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Join 
+        - ''
+        - - !Ref 'AWS::Region'
+          - !FindInMap [ SubnetConfig, PublicA, AZSuffix ]
+      CidrBlock:  !FindInMap [ SubnetConfig, PublicA, Cidr ]
+      MapPublicIpOnLaunch: true
+      Tags: [{Key: Name, Value: !Sub '${ClusterName}-PublicA'}]
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Join ['', [ !Ref 'AWS::Region', !FindInMap [ SubnetConfig, PublicB, AZSuffix ] ] ]
+      CidrBlock:  !FindInMap [ SubnetConfig, PublicB, Cidr ]
+      MapPublicIpOnLaunch: true
+      Tags: [{Key: Name, Value: !Sub '${ClusterName}-PublicB'}]
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Join ['', [ !Ref 'AWS::Region', !FindInMap [ SubnetConfig, PrivateA, AZSuffix ] ] ]
+      CidrBlock:  !FindInMap [ SubnetConfig, PrivateA, Cidr ]
+      Tags: [{Key: Name, Value: !Sub '${ClusterName}-PrivateA'}]
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Join ['', [ !Ref 'AWS::Region', !FindInMap [ SubnetConfig, PrivateB, AZSuffix ] ] ]
+      CidrBlock:  !FindInMap [ SubnetConfig, PrivateB, Cidr ]
+      Tags: [{Key: Name, Value: !Sub '${ClusterName}-PrivateB'}]
+
+  PublicSubnetRouteA:  # associate
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+  PublicSubnetRouteB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
+
+  NatGatewayEIP:
+    Type: AWS::EC2::EIP
+    Properties: { Domain: vpc }
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGatewayEIP.AllocationId
+      SubnetId:     !Ref PublicSubnetA
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties: { VpcId: !Ref Vpc }
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+  PrivateSubnetRouteA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetA
+      RouteTableId: !Ref PrivateRouteTable
+  PrivateSubnetRouteB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetB
+      RouteTableId: !Ref PrivateRouteTable
+
+# ---------------------------------------------------------------------------
+#  EKS Cluster & NodeGroup
+# ---------------------------------------------------------------------------
+  EksServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal: { Service: [ eks.amazonaws.com ] }
+          Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+
+  EksCluster:
+    Type: AWS::EKS::Cluster
+    Properties:
+      Name:   !Ref ClusterName
+      KubernetesNetworkConfig:
+        ServiceIpv4Cidr: 172.20.0.0/16
+      Version: !Ref EksVersion
+      ResourcesVpcConfig:
+        SecurityGroupIds: []
+        SubnetIds:
+          - !Ref PublicSubnetA
+          - !Ref PublicSubnetB
+          - !Ref PrivateSubnetA
+          - !Ref PrivateSubnetB
+      RoleArn: !GetAtt EksServiceRole.Arn
+
+  NodeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal: { Service: [ ec2.amazonaws.com ] }
+          Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+        - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
+
+  NodeGroup:
+    Type: AWS::EKS::Nodegroup
+    Properties:
+      ClusterName: !Ref ClusterName
+      NodegroupName: default-ng
+      ScalingConfig:
+        DesiredSize: !Ref NodeDesiredCapacity
+        MaxSize: !Ref NodeDesiredCapacity
+        MinSize: !Ref NodeDesiredCapacity
+      DiskSize: 20
+      InstanceTypes: [ !Ref NodeInstanceType ]
+      Subnets:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      NodeRole: !GetAtt NodeRole.Arn
+      AmiType: AL2_x86_64
+
+# ---------------------------------------------------------------------------
+#  Namespace, IRSA & Cleanup Job (AWSQS::Kubernetes::Resource)
+#    (AWSQS public extension “Kubernetes::Resource” replaces the older
+#     Manifest type.)
+# ---------------------------------------------------------------------------
+  AckSystemNamespace:
+    Type: AWSQS::Kubernetes::Resource
+    Properties:
+      ClusterName: !Ref ClusterName
+      # AWSQS::Kubernetes::Resource expects Manifest as a single YAML/JSON
+      # string, not a YAML array.  Use block scalar (|) to embed it.
+      Manifest: |
+        apiVersion: v1
+        kind: Namespace
+        metadata:
+          name: ack-system
+
+# ---------------------------------------------------------------------------
+#  OIDC provider (discovered from the cluster) and IRSA role for ACK controller
+# ---------------------------------------------------------------------------
+  OidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: !GetAtt EksCluster.OpenIdConnectIssuerUrl
+      ClientIdList: [ sts.amazonaws.com ]
+      ThumbprintList: [ 9e99a48a9960b14926bb7f3b02e22da0cedb8061 ] # Amazon Root CA1
+
+  SageMakerIrsaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal: { Federated: !Ref OidcProvider }
+          Action: sts:AssumeRoleWithWebIdentity
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSageMakerFullAccess
+
+  SageMakerServiceAccount:
+    Type: AWSQS::Kubernetes::Resource
+    DependsOn: AckSystemNamespace
+    Properties:
+      ClusterName: !Ref ClusterName
+      Manifest: !Sub |
+        apiVersion: v1
+        kind: ServiceAccount
+        metadata:
+          name: ack-sagemaker-controller
+          namespace: ack-system
+          annotations:
+            eks.amazonaws.com/role-arn: ${SageMakerIrsaRole.Arn}
+
+# ---------------------------------------------------------------------------
+#  Lambda‑backed custom resource that installs / removes the SageMaker ACK
+#  controller via Helm (replaces deprecated AWSQS::Kubernetes::Helm type)
+# ---------------------------------------------------------------------------
+
+  AckSageMakerFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: CFN-Registry-ExecRole        # single role reused by CFN handler
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal: { Service: [ lambda.amazonaws.com ] }
+          Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+      - PolicyName: EksHelmAccess
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action:
+              - eks:DescribeCluster
+              - eks:AccessKubernetesApi
+            Resource: "*"
+          - Effect: Allow
+            Action: iam:PassRole
+            Resource: "*"     # restrict in prod
+
+  AckSageMakerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 600
+      MemorySize: 256
+      Role: !GetAtt AckSageMakerFunctionRole.Arn
+      Code:
+        # Bucket name only; object key specified separately
+        S3Bucket: my-purple-game-assets-307946665489-us-east-2
+        S3Key:    ack-helm-handler.zip
+
+  AckSageMakerCustom:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: SageMakerServiceAccount   # wait for namespace + SA
+    Properties:
+      ServiceToken: !GetAtt AckSageMakerFunction.Arn
+      ClusterName: !Ref ClusterName
+      Namespace:   ack-system
+      ChartRepo:   oci://public.ecr.aws/aws-controllers-k8s/sagemaker-chart
+      ChartName:   sagemaker-chart
+      ChartVersion: "1.2.16"
+      Values: |
+        aws:
+          region: ${AWS::Region}
+        serviceAccount:
+          create: false
+          name: ack-sagemaker-controller

@@ -148,6 +148,23 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
 
+  NodeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: [ ec2.amazonaws.com ]
+          Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+        - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-NodeRole'
+
   EksCluster:
     Type: AWS::EKS::Cluster
     Properties:
@@ -156,7 +173,6 @@ Resources:
         ServiceIpv4Cidr: 172.20.0.0/16
       Version: !Ref EksVersion
       ResourcesVpcConfig:
-        SecurityGroupIds: []
         SubnetIds:
           - !Ref PublicSubnetA
           - !Ref PublicSubnetB
@@ -164,20 +180,8 @@ Resources:
           - !Ref PrivateSubnetB
       RoleArn: !GetAtt EksServiceRole.Arn
 
-  NodeRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Statement:
-        - Effect: Allow
-          Principal: { Service: [ ec2.amazonaws.com ] }
-          Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
-        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
-        - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
-
   NodeGroup:
+    DependsOn: EksCluster
     Type: AWS::EKS::Nodegroup
     Properties:
       ClusterName: !Ref ClusterName
@@ -200,6 +204,9 @@ Resources:
 #     Manifest type.)
 # ---------------------------------------------------------------------------
   AckSystemNamespace:
+    DependsOn:
+      - EksCluster
+      - NodeGroup
     Type: AWSQS::Kubernetes::Resource
     Properties:
       ClusterName: !Ref ClusterName
@@ -234,7 +241,10 @@ Resources:
 
   SageMakerServiceAccount:
     Type: AWSQS::Kubernetes::Resource
-    DependsOn: AckSystemNamespace
+    DependsOn:
+      - EksCluster
+      - NodeGroup
+      - AckSystemNamespace
     Properties:
       ClusterName: !Ref ClusterName
       Manifest: !Sub |
@@ -304,3 +314,60 @@ Resources:
         serviceAccount:
           create: false
           name: ack-sagemaker-controller
+
+# ---------------------------------------------------------------------------
+#  DVWA demo application (namespace + Deployment & Service)
+# ---------------------------------------------------------------------------
+  DvwaNamespace:
+    Type: AWSQS::Kubernetes::Resource
+    DependsOn:
+      - EksCluster
+      - NodeGroup
+    Properties:
+      ClusterName: !Ref ClusterName
+      Manifest: |
+        apiVersion: v1
+        kind: Namespace
+        metadata:
+          name: dvwa
+
+  DvwaApp:
+    Type: AWSQS::Kubernetes::Resource
+    DependsOn:
+      - DvwaNamespace
+    Properties:
+      ClusterName: !Ref ClusterName
+      Manifest: |
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: dvwa
+          namespace: dvwa
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app: dvwa
+          template:
+            metadata:
+              labels:
+                app: dvwa
+            spec:
+              containers:
+              - name: dvwa
+                image: vulnerables/web-dvwa:latest
+                ports:
+                - containerPort: 80
+        ---
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: dvwa
+          namespace: dvwa
+        spec:
+          type: LoadBalancer
+          selector:
+            app: dvwa
+          ports:
+          - port: 80
+            targetPort: 80

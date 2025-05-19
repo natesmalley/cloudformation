@@ -179,6 +179,8 @@ Resources:
           - !Ref PrivateSubnetA
           - !Ref PrivateSubnetB
       RoleArn: !GetAtt EksServiceRole.Arn
+      AccessConfig:
+        AuthenticationMode: API_AND_CONFIG_MAP
 
   NodeGroup:
     DependsOn: EksCluster
@@ -198,6 +200,33 @@ Resources:
       NodeRole: !GetAtt NodeRole.Arn
       AmiType: AL2_x86_64
 
+  ClusterAdminAccess:
+    Type: AWS::EKS::AccessEntry
+    DependsOn:
+      - EksCluster
+      - AckSageMakerFunctionRole
+    Properties:
+      ClusterName: !Ref ClusterName
+      PrincipalArn: !GetAtt AckSageMakerFunctionRole.Arn
+      Type: STANDARD
+      AccessPolicies:
+        - PolicyArn: arn:aws:eks::aws:cluster-access-policy/AmazonEKSAdminPolicy
+          AccessScope:
+            Type: cluster
+
+  RootAccountAccess:
+    Type: AWS::EKS::AccessEntry
+    DependsOn:
+      - EksCluster
+    Properties:
+      ClusterName: !Ref ClusterName
+      PrincipalArn: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+      Type: STANDARD
+      AccessPolicies:
+        - PolicyArn: arn:aws:eks::aws:cluster-access-policy/AmazonEKSAdminPolicy
+          AccessScope:
+            Type: cluster
+
 # ---------------------------------------------------------------------------
 #  Namespace, IRSA & Cleanup Job (AWSQS::Kubernetes::Resource)
 #    (AWSQS public extension “Kubernetes::Resource” replaces the older
@@ -207,9 +236,12 @@ Resources:
     DependsOn:
       - EksCluster
       - NodeGroup
+      - ClusterAdminAccess
+      - RootAccountAccess
     Type: AWSQS::Kubernetes::Resource
     Properties:
       ClusterName: !Ref ClusterName
+      RoleArn: !GetAtt AckSageMakerFunctionRole.Arn
       # AWSQS::Kubernetes::Resource expects Manifest as a single YAML/JSON
       # string, not a YAML array.  Use block scalar (|) to embed it.
       Manifest: |
@@ -245,8 +277,11 @@ Resources:
       - EksCluster
       - NodeGroup
       - AckSystemNamespace
+      - ClusterAdminAccess
+      - RootAccountAccess
     Properties:
       ClusterName: !Ref ClusterName
+      RoleArn: !GetAtt AckSageMakerFunctionRole.Arn
       Manifest: !Sub |
         apiVersion: v1
         kind: ServiceAccount
@@ -323,8 +358,11 @@ Resources:
     DependsOn:
       - EksCluster
       - NodeGroup
+      - ClusterAdminAccess
+      - RootAccountAccess
     Properties:
       ClusterName: !Ref ClusterName
+      RoleArn: !GetAtt AckSageMakerFunctionRole.Arn
       Manifest: |
         apiVersion: v1
         kind: Namespace
@@ -337,6 +375,7 @@ Resources:
       - DvwaNamespace
     Properties:
       ClusterName: !Ref ClusterName
+      RoleArn: !GetAtt AckSageMakerFunctionRole.Arn
       Manifest: |
         apiVersion: apps/v1
         kind: Deployment

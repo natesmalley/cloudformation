@@ -240,10 +240,9 @@ Resources:
       - RootAccountAccess
     Type: AWSQS::Kubernetes::Resource
     Properties:
-      ClusterName: !Ref ClusterName
-      RoleArn: !GetAtt AckSageMakerFunctionRole.Arn
       # AWSQS::Kubernetes::Resource expects Manifest as a single YAML/JSON
       # string, not a YAML array.  Use block scalar (|) to embed it.
+      ClusterName: !Ref ClusterName
       Manifest: |
         apiVersion: v1
         kind: Namespace
@@ -281,7 +280,6 @@ Resources:
       - RootAccountAccess
     Properties:
       ClusterName: !Ref ClusterName
-      RoleArn: !GetAtt AckSageMakerFunctionRole.Arn
       Manifest: !Sub |
         apiVersion: v1
         kind: ServiceAccount
@@ -319,6 +317,30 @@ Resources:
           - Effect: Allow
             Action: iam:PassRole
             Resource: "*"     # restrict in prod
+
+  # NEW – execution role for AWSQS::Kubernetes::Resource
+  CfnK8sExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: CFN-K8s-ExecutionRole
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudformation.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: AllowEKSAccess
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - eks:DescribeCluster
+                  - eks:AccessKubernetesApi   # lets the extension talk to your cluster
+                Resource: "*"
+              - Effect: Allow                # lets the extension pass IRSA roles
+                Action: iam:PassRole
+                Resource: "*"
 
   AckSageMakerFunction:
     Type: AWS::Lambda::Function
@@ -362,7 +384,6 @@ Resources:
       - RootAccountAccess
     Properties:
       ClusterName: !Ref ClusterName
-      RoleArn: !GetAtt AckSageMakerFunctionRole.Arn
       Manifest: |
         apiVersion: v1
         kind: Namespace
@@ -375,7 +396,6 @@ Resources:
       - DvwaNamespace
     Properties:
       ClusterName: !Ref ClusterName
-      RoleArn: !GetAtt AckSageMakerFunctionRole.Arn
       Manifest: |
         apiVersion: apps/v1
         kind: Deployment
@@ -410,3 +430,29 @@ Resources:
           ports:
           - port: 80
             targetPort: 80
+  AwsAuthConfigMap:
+    Type: AWSQS::Kubernetes::Resource
+    DependsOn:
+      - EksCluster
+      - NodeGroup
+      - RootAccountAccess
+    Properties:
+      ClusterName: !Ref ClusterName
+      Manifest: |
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: aws-auth
+          namespace: kube-system
+        data:
+          mapRoles: |
+            - rolearn: !GetAtt NodeRole.Arn
+              username: system:node:{{EC2PrivateDNSName}}
+              groups:
+                - system:bootstrappers
+                - system:nodes
+          mapUsers: |
+            - userarn: !Sub arn:aws:iam::${AWS::AccountId}:root
+              username: root
+              groups:
+                - system:masters

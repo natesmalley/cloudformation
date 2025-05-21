@@ -227,6 +227,19 @@ Resources:
           AccessScope:
             Type: cluster
 
+  CfnK8sExecutionRoleAccess:
+    Type: AWS::EKS::AccessEntry
+    DependsOn:
+      - EksCluster
+    Properties:
+      ClusterName: !Ref ClusterName
+      PrincipalArn: !GetAtt CfnK8sExecutionRole.Arn
+      Type: STANDARD
+      AccessPolicies:
+        - PolicyArn: arn:aws:eks::aws:cluster-access-policy/AmazonEKSAdminPolicy
+          AccessScope:
+            Type: cluster
+
 # ---------------------------------------------------------------------------
 #  Namespace, IRSA & Cleanup Job (AWSQS::Kubernetes::Resource)
 #    (AWSQS public extension “Kubernetes::Resource” replaces the older
@@ -238,6 +251,7 @@ Resources:
       - NodeGroup
       - ClusterAdminAccess
       - RootAccountAccess
+      - CfnK8sExecutionRoleAccess
     Type: AWSQS::Kubernetes::Resource
     Properties:
       # AWSQS::Kubernetes::Resource expects Manifest as a single YAML/JSON
@@ -278,6 +292,7 @@ Resources:
       - AckSystemNamespace
       - ClusterAdminAccess
       - RootAccountAccess
+      - CfnK8sExecutionRoleAccess
     Properties:
       ClusterName: !Ref ClusterName
       Manifest: !Sub |
@@ -327,7 +342,7 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              Service: cloudformation.amazonaws.com
+              Service: resources.cloudformation.amazonaws.com
             Action: sts:AssumeRole
       Policies:
         - PolicyName: AllowEKSAccess
@@ -335,10 +350,26 @@ Resources:
             Statement:
               - Effect: Allow
                 Action:
+                  - ec2:CreateNetworkInterface
+                  - ec2:DeleteNetworkInterface
+                  - ec2:DescribeSecurityGroups
+                  - ec2:DescribeSubnets
+                  - ec2:DescribeVpcs
+                  - eks:AccessKubernetesApi
                   - eks:DescribeCluster
-                  - eks:AccessKubernetesApi   # lets the extension talk to your cluster
+                  - lambda:CreateFunction
+                  - lambda:DeleteFunction
+                  - lambda:InvokeFunction
+                  - lambda:UpdateFunctionCode
+                  - lambda:UpdateFunctionConfiguration
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - s3:GetObject
+                  - ssm:GetParameter
+                  - sts:GetCallerIdentity
                 Resource: "*"
-              - Effect: Allow                # lets the extension pass IRSA roles
+              - Effect: Allow
                 Action: iam:PassRole
                 Resource: "*"
 
@@ -382,6 +413,7 @@ Resources:
       - NodeGroup
       - ClusterAdminAccess
       - RootAccountAccess
+      - CfnK8sExecutionRoleAccess
     Properties:
       ClusterName: !Ref ClusterName
       Manifest: |
@@ -394,6 +426,7 @@ Resources:
     Type: AWSQS::Kubernetes::Resource
     DependsOn:
       - DvwaNamespace
+      - CfnK8sExecutionRoleAccess
     Properties:
       ClusterName: !Ref ClusterName
       Manifest: |
@@ -430,29 +463,3 @@ Resources:
           ports:
           - port: 80
             targetPort: 80
-  AwsAuthConfigMap:
-    Type: AWSQS::Kubernetes::Resource
-    DependsOn:
-      - EksCluster
-      - NodeGroup
-      - RootAccountAccess
-    Properties:
-      ClusterName: !Ref ClusterName
-      Manifest: |
-        apiVersion: v1
-        kind: ConfigMap
-        metadata:
-          name: aws-auth
-          namespace: kube-system
-        data:
-          mapRoles: |
-            - rolearn: !GetAtt NodeRole.Arn
-              username: system:node:{{EC2PrivateDNSName}}
-              groups:
-                - system:bootstrappers
-                - system:nodes
-          mapUsers: |
-            - userarn: !Sub arn:aws:iam::${AWS::AccountId}:root
-              username: root
-              groups:
-                - system:masters

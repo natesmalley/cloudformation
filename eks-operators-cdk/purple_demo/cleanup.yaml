@@ -1,0 +1,21 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: "Adopt AckSystemNamespace then delete cleanly."
+
+Resources:
+  AckSystemNamespace:
+    Type: Custom::NoOp
+    Properties:
+      ServiceToken: !GetAtt NoOpFunction.Arn         # same logical ID
+      # Physical ID can be anything because CFN only tracks logical ⇢ phys
+  NoOpFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Runtime: python3.12
+      Role: arn:aws:iam::307946665489:role/AckSageMakerFunctionRole
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import cfnresponse
+          def handler(event, context):
+              cfnresponse.send(event, context, cfnresponse.SUCCESS, {})

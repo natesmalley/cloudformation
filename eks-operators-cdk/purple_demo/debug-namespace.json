@@ -1,0 +1,9 @@
+{
+    "requestData": {
+      "logicalResourceIdentifier": "DebugNamespace",
+      "resourceProperties": {
+        "ClusterName": "purple-demo",
+        "Manifest": "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: debug"
+      }
+    }
+  }

@@ -19,6 +19,14 @@ Parameters:
   EksVersion:
     Type: String
     Default: "1.28"
+  S3Bucket:
+    Type: String
+    Default: my-purple-game-assets-307946665489-us-east-2
+    Description: S3 bucket containing the Helm handler Lambda code
+  S3Key:
+    Type: String
+    Default: ack-helm-handler.zip
+    Description: S3 key for the Helm handler Lambda code
 
 Mappings:
   SubnetConfig:
@@ -245,23 +253,80 @@ Resources:
 #    (AWSQS public extension “Kubernetes::Resource” replaces the older
 #     Manifest type.)
 # ---------------------------------------------------------------------------
-  AckSystemNamespace:
-    DependsOn:
-      - EksCluster
-      - NodeGroup
-      - ClusterAdminAccess
-      - RootAccountAccess
-      - CfnK8sExecutionRoleAccess
-    Type: AWSQS::Kubernetes::Resource
+
+  ApplyManifestFunction:
+    Type: AWS::Lambda::Function
     Properties:
-      # AWSQS::Kubernetes::Resource expects Manifest as a single YAML/JSON
-      # string, not a YAML array.  Use block scalar (|) to embed it.
-      ClusterName: !Ref ClusterName
-      Manifest: |
-        apiVersion: v1
-        kind: Namespace
-        metadata:
-          name: ack-system
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 300
+      MemorySize: 128
+      Role: !GetAtt AckSageMakerFunctionRole.Arn   # reuse existing role with eks:AccessKubernetesApi
+      Code:
+        ZipFile: |
+          import json, boto3, cfnresponse, re
+          eks = boto3.client("eks")
+          def handler(event, context):
+              rp = event['ResourceProperties']
+              cluster = rp['Cluster']
+              manifest_list = rp['Manifest']          # list of YAML (or JSON) strings
+              try:
+                  if event['RequestType'] == 'Delete':
+                    # Best‑effort delete based on regex (no PyYAML dependency)
+                    for doc in manifest_list:
+                      # extract kind, name, namespace with simple regex
+                      kind_m = re.search(r'kind:\s*(\w+)', doc)
+                      name_m = re.search(r'name:\s*([-\w]+)', doc)
+                      ns_m   = re.search(r'namespace:\s*([-\w]+)', doc)
+                      if not (kind_m and name_m):
+                          continue
+                      kind = kind_m.group(1).lower() + 's'
+                      name = name_m.group(1)
+                      ns = ns_m.group(1) if ns_m else None
+                      uri = f"/apis/apps/v1/namespaces/{ns}/{kind}/{name}" if ns else f"/api/v1/{kind}/{name}"
+                      eks.execute_kubernetes_api(clusterName=cluster, method='DELETE', uri=uri)
+                    cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                  else:
+                      for doc in manifest_list:
+                          eks.execute_kubernetes_api(
+                              clusterName=cluster,
+                              method='POST',
+                              uri='/',
+                              contentType='application/yaml',
+                              body=doc if isinstance(doc, str) else json.dumps(doc)
+                          )
+              except Exception as e:
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+
+  AckSystemNamespace:
+    Type: Custom::ApplyManifest
+    DependsOn: NodeGroup
+    Properties:
+      ServiceToken: !GetAtt ApplyManifestFunction.Arn
+      Cluster: !Ref ClusterName
+      Manifest:
+        - |
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: ack-system
+
+  SageMakerServiceAccount:
+    Type: Custom::ApplyManifest
+    DependsOn:
+      - AckSystemNamespace
+    Properties:
+      ServiceToken: !GetAtt ApplyManifestFunction.Arn
+      Cluster:  !Ref ClusterName
+      Manifest:
+        - !Sub |
+            apiVersion: v1
+            kind: ServiceAccount
+            metadata:
+              name: ack-sagemaker-controller
+              namespace: ack-system
+              annotations:
+                eks.amazonaws.com/role-arn: ${SageMakerIrsaRole.Arn}
 
 # ---------------------------------------------------------------------------
 #  OIDC provider (discovered from the cluster) and IRSA role for ACK controller
@@ -284,25 +349,6 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonSageMakerFullAccess
 
-  SageMakerServiceAccount:
-    Type: AWSQS::Kubernetes::Resource
-    DependsOn:
-      - EksCluster
-      - NodeGroup
-      - AckSystemNamespace
-      - ClusterAdminAccess
-      - RootAccountAccess
-      - CfnK8sExecutionRoleAccess
-    Properties:
-      ClusterName: !Ref ClusterName
-      Manifest: !Sub |
-        apiVersion: v1
-        kind: ServiceAccount
-        metadata:
-          name: ack-sagemaker-controller
-          namespace: ack-system
-          annotations:
-            eks.amazonaws.com/role-arn: ${SageMakerIrsaRole.Arn}
 
 # ---------------------------------------------------------------------------
 #  Lambda‑backed custom resource that installs / removes the SageMaker ACK
@@ -312,7 +358,7 @@ Resources:
   AckSageMakerFunctionRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: CFN-Registry-ExecRole        # single role reused by CFN handler
+      RoleName: !Sub 'CFN-Registry-ExecRole-${ClusterName}'
       AssumeRolePolicyDocument:
         Statement:
         - Effect: Allow
@@ -337,7 +383,7 @@ Resources:
   CfnK8sExecutionRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: CFN-K8s-ExecutionRole
+      RoleName: !Sub 'CFN-K8s-ExecutionRole-${ClusterName}'
       AssumeRolePolicyDocument:
         Statement:
           - Effect: Allow
@@ -367,6 +413,7 @@ Resources:
                   - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
+                  - logs:PutRetentionPolicy
                   - s3:GetObject
                   - ssm:GetParameter
                   - sts:GetCallerIdentity
@@ -384,9 +431,8 @@ Resources:
       MemorySize: 256
       Role: !GetAtt AckSageMakerFunctionRole.Arn
       Code:
-        # Bucket name only; object key specified separately
-        S3Bucket: my-purple-game-assets-307946665489-us-east-2
-        S3Key:    ack-helm-handler.zip
+        S3Bucket: !Ref S3Bucket
+        S3Key: !Ref S3Key
 
   AckSageMakerCustom:
     Type: AWS::CloudFormation::CustomResource
@@ -398,7 +444,7 @@ Resources:
       ChartRepo:   oci://public.ecr.aws/aws-controllers-k8s/sagemaker-chart
       ChartName:   sagemaker-chart
       ChartVersion: "1.2.16"
-      Values: |
+      Values: !Sub |
         aws:
           region: ${AWS::Region}
         serviceAccount:
@@ -408,60 +454,59 @@ Resources:
 # ---------------------------------------------------------------------------
 #  DVWA demo application (namespace + Deployment & Service)
 # ---------------------------------------------------------------------------
+
   DvwaNamespace:
-    Type: AWSQS::Kubernetes::Resource
-    DependsOn:
-      - EksCluster
-      - NodeGroup
-      - ClusterAdminAccess
-      - RootAccountAccess
-      - CfnK8sExecutionRoleAccess
+    Type: Custom::ApplyManifest
+    DependsOn: NodeGroup
     Properties:
-      ClusterName: !Ref ClusterName
-      Manifest: |
-        apiVersion: v1
-        kind: Namespace
-        metadata:
-          name: dvwa
+      ServiceToken: !GetAtt ApplyManifestFunction.Arn
+      Cluster: !Ref ClusterName
+      Manifest:
+        - |
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: dvwa
 
   DvwaApp:
-    Type: AWSQS::Kubernetes::Resource
+    Type: Custom::ApplyManifest
     DependsOn:
       - DvwaNamespace
-      - CfnK8sExecutionRoleAccess
     Properties:
-      ClusterName: !Ref ClusterName
-      Manifest: |
-        apiVersion: apps/v1
-        kind: Deployment
-        metadata:
-          name: dvwa
-          namespace: dvwa
-        spec:
-          replicas: 1
-          selector:
-            matchLabels:
-              app: dvwa
-          template:
-            metadata:
-              labels:
+      ServiceToken: !GetAtt ApplyManifestFunction.Arn
+      Cluster:  !Ref ClusterName
+      Manifest:
+        - |
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: dvwa
+            namespace: dvwa
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
                 app: dvwa
-            spec:
-              containers:
-              - name: dvwa
-                image: vulnerables/web-dvwa:latest
-                ports:
-                - containerPort: 80
-        ---
-        apiVersion: v1
-        kind: Service
-        metadata:
-          name: dvwa
-          namespace: dvwa
-        spec:
-          type: LoadBalancer
-          selector:
-            app: dvwa
-          ports:
-          - port: 80
-            targetPort: 80
+            template:
+              metadata:
+                labels:
+                  app: dvwa
+              spec:
+                containers:
+                  - name: dvwa
+                    image: vulnerables/web-dvwa:latest
+                    ports:
+                      - containerPort: 80
+        - |
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: dvwa
+            namespace: dvwa
+          spec:
+            type: LoadBalancer
+            selector:
+              app: dvwa
+            ports:
+              - port: 80
+                targetPort: 80

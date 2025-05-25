@@ -264,8 +264,35 @@ Resources:
       Role: !GetAtt AckSageMakerFunctionRole.Arn   # reuse existing role with eks:AccessKubernetesApi
       Code:
         ZipFile: |
-          import json, boto3, cfnresponse, re
+          import json, boto3, re, urllib3
+
+          SUCCESS = "SUCCESS"
+          FAILED = "FAILED"
+
+          def send_response(event, context, response_status, response_data={}, physical_resource_id=None, no_echo=False):
+              response_body = {
+                  'Status': response_status,
+                  'Reason': f'See CloudWatch Log Stream: {context.log_stream_name}',
+                  'PhysicalResourceId': physical_resource_id or context.log_stream_name,
+                  'StackId': event['StackId'],
+                  'RequestId': event['RequestId'],
+                  'LogicalResourceId': event['LogicalResourceId'],
+                  'NoEcho': no_echo,
+                  'Data': response_data
+              }
+              
+              json_body = json.dumps(response_body)
+              headers = {'content-type': '', 'content-length': str(len(json_body))}
+              
+              try:
+                  http = urllib3.PoolManager()
+                  response = http.request('PUT', event['ResponseURL'], body=json_body, headers=headers)
+                  print(f"Status code: {response.status}")
+              except Exception as e:
+                  print(f"Failed to send response: {e}")
+
           eks = boto3.client("eks")
+          
           def handler(event, context):
               rp = event['ResourceProperties']
               cluster = rp['Cluster']
@@ -284,8 +311,11 @@ Resources:
                       name = name_m.group(1)
                       ns = ns_m.group(1) if ns_m else None
                       uri = f"/apis/apps/v1/namespaces/{ns}/{kind}/{name}" if ns else f"/api/v1/{kind}/{name}"
-                      eks.execute_kubernetes_api(clusterName=cluster, method='DELETE', uri=uri)
-                    cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                      try:
+                          eks.execute_kubernetes_api(clusterName=cluster, method='DELETE', uri=uri)
+                      except Exception as delete_error:
+                          print(f"Error deleting {kind}/{name}: {delete_error}")
+                    send_response(event, context, SUCCESS, {})
                   else:
                       for doc in manifest_list:
                           eks.execute_kubernetes_api(
@@ -295,8 +325,10 @@ Resources:
                               contentType='application/yaml',
                               body=doc if isinstance(doc, str) else json.dumps(doc)
                           )
+                      send_response(event, context, SUCCESS, {})
               except Exception as e:
-                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+                  print(f"Error: {e}")
+                  send_response(event, context, FAILED, {'Error': str(e)})
 
   AckSystemNamespace:
     Type: Custom::ApplyManifest

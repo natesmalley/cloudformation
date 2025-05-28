@@ -4,6 +4,16 @@ Description: >
   cleanup Job, and DVWA-ready node group – single-template version.
 
 Parameters:
+  StaticAssetsBucket:
+    Description: (Optional) Bucket for static assets that live outside of the pipeline (e.g. data for seeding)
+    Type: String
+    Default: "logbuckettodah"
+
+  StaticAssetsKeyPrefix:
+    Description: (Optional) Bucket prefix for static assets that live outside of the pipeline (e.g. data for seeding)
+    Type: String
+    Default: "6f0d03eb-a398-401c-9355-9d93d05381ef/"
+
   ClusterName:
     Type: String
     Default: purple-demo
@@ -18,15 +28,11 @@ Parameters:
     Default: 10.0.0.0/16
   EksVersion:
     Type: String
-    Default: "1.28"
-  S3Bucket:
-    Type: String
-    Default: my-purple-game-assets-307946665489-us-east-2
-    Description: S3 bucket containing the Helm handler Lambda code
-  S3Key:
-    Type: String
-    Default: ack-helm-handler.zip
-    Description: S3 key for the Helm handler Lambda code
+    Default: "1.32"
+
+  LatestAmiId:
+    Type: "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>"
+    Default: "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64"
 
 Mappings:
   SubnetConfig:
@@ -151,10 +157,11 @@ Resources:
       AssumeRolePolicyDocument:
         Statement:
         - Effect: Allow
-          Principal: { Service: [ eks.amazonaws.com ] }
+          Principal: { Service: [ eks.amazonaws.com, ec2.amazonaws.com ] }
           Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+        - arn:aws:iam::aws:policy/AdministratorAccess
 
   NodeRole:
     Type: AWS::IAM::Role
@@ -169,6 +176,8 @@ Resources:
         - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
         - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
         - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
+        - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+        - arn:aws:iam::aws:policy/AdministratorAccess
       Tags:
         - Key: Name
           Value: !Sub '${ClusterName}-NodeRole'
@@ -244,7 +253,7 @@ Resources:
       PrincipalArn: !GetAtt CfnK8sExecutionRole.Arn
       Type: STANDARD
       AccessPolicies:
-        - PolicyArn: arn:aws:eks::aws:cluster-access-policy/AmazonEKSAdminPolicy
+        - PolicyArn: arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy
           AccessScope:
             Type: cluster
 
@@ -253,112 +262,23 @@ Resources:
 #    (AWSQS public extension “Kubernetes::Resource” replaces the older
 #     Manifest type.)
 # ---------------------------------------------------------------------------
-
-  ApplyManifestFunction:
-    Type: AWS::Lambda::Function
-    Properties:
-      Runtime: python3.12
-      Handler: index.handler
-      Timeout: 300
-      MemorySize: 128
-      Role: !GetAtt AckSageMakerFunctionRole.Arn   # reuse existing role with eks:AccessKubernetesApi
-      Code:
-        ZipFile: |
-          import json, boto3, re, urllib3
-
-          SUCCESS = "SUCCESS"
-          FAILED = "FAILED"
-
-          def send_response(event, context, response_status, response_data={}, physical_resource_id=None, no_echo=False):
-              response_body = {
-                  'Status': response_status,
-                  'Reason': f'See CloudWatch Log Stream: {context.log_stream_name}',
-                  'PhysicalResourceId': physical_resource_id or context.log_stream_name,
-                  'StackId': event['StackId'],
-                  'RequestId': event['RequestId'],
-                  'LogicalResourceId': event['LogicalResourceId'],
-                  'NoEcho': no_echo,
-                  'Data': response_data
-              }
-              
-              json_body = json.dumps(response_body)
-              headers = {'content-type': '', 'content-length': str(len(json_body))}
-              
-              try:
-                  http = urllib3.PoolManager()
-                  response = http.request('PUT', event['ResponseURL'], body=json_body, headers=headers)
-                  print(f"Status code: {response.status}")
-              except Exception as e:
-                  print(f"Failed to send response: {e}")
-
-          eks = boto3.client("eks")
-          
-          def handler(event, context):
-              rp = event['ResourceProperties']
-              cluster = rp['Cluster']
-              manifest_list = rp['Manifest']          # list of YAML (or JSON) strings
-              try:
-                  if event['RequestType'] == 'Delete':
-                    # Best‑effort delete based on regex (no PyYAML dependency)
-                    for doc in manifest_list:
-                      # extract kind, name, namespace with simple regex
-                      kind_m = re.search(r'kind:\s*(\w+)', doc)
-                      name_m = re.search(r'name:\s*([-\w]+)', doc)
-                      ns_m   = re.search(r'namespace:\s*([-\w]+)', doc)
-                      if not (kind_m and name_m):
-                          continue
-                      kind = kind_m.group(1).lower() + 's'
-                      name = name_m.group(1)
-                      ns = ns_m.group(1) if ns_m else None
-                      uri = f"/apis/apps/v1/namespaces/{ns}/{kind}/{name}" if ns else f"/api/v1/{kind}/{name}"
-                      try:
-                          eks.execute_kubernetes_api(clusterName=cluster, method='DELETE', uri=uri)
-                      except Exception as delete_error:
-                          print(f"Error deleting {kind}/{name}: {delete_error}")
-                    send_response(event, context, SUCCESS, {})
-                  else:
-                      for doc in manifest_list:
-                          eks.execute_kubernetes_api(
-                              clusterName=cluster,
-                              method='POST',
-                              uri='/',
-                              contentType='application/yaml',
-                              body=doc if isinstance(doc, str) else json.dumps(doc)
-                          )
-                      send_response(event, context, SUCCESS, {})
-              except Exception as e:
-                  print(f"Error: {e}")
-                  send_response(event, context, FAILED, {'Error': str(e)})
-
-  AckSystemNamespace:
-    Type: Custom::ApplyManifest
-    DependsOn: NodeGroup
-    Properties:
-      ServiceToken: !GetAtt ApplyManifestFunction.Arn
-      Cluster: !Ref ClusterName
-      Manifest:
-        - |
-          apiVersion: v1
-          kind: Namespace
-          metadata:
-            name: ack-system
-
-  SageMakerServiceAccount:
-    Type: Custom::ApplyManifest
-    DependsOn:
-      - AckSystemNamespace
-    Properties:
-      ServiceToken: !GetAtt ApplyManifestFunction.Arn
-      Cluster:  !Ref ClusterName
-      Manifest:
-        - !Sub |
-            apiVersion: v1
-            kind: ServiceAccount
-            metadata:
-              name: ack-sagemaker-controller
-              namespace: ack-system
-              annotations:
-                eks.amazonaws.com/role-arn: ${SageMakerIrsaRole.Arn}
+#  AckSystemNamespace:
+#    DependsOn:
+#      - EksCluster
+#      - NodeGroup
+#      - ClusterAdminAccess
+#      - RootAccountAccess
+#      - CfnK8sExecutionRoleAccess
+#    Type: AWSQS::Kubernetes::Resource
+#    Properties:
+      # AWSQS::Kubernetes::Resource expects Manifest as a single YAML/JSON
+      # string, not a YAML array.  Use block scalar (|) to embed it.
+#      ClusterName: !Ref ClusterName
+#      Manifest: |
+#        apiVersion: v1
+#        kind: Namespace
+#        metadata:
+#          name: ack-system
 
 # ---------------------------------------------------------------------------
 #  OIDC provider (discovered from the cluster) and IRSA role for ACK controller
@@ -381,6 +301,25 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonSageMakerFullAccess
 
+#  SageMakerServiceAccount:
+#    Type: AWSQS::Kubernetes::Resource
+#    DependsOn:
+#      - EksCluster
+#      - NodeGroup
+#      #- AckSystemNamespace
+#      - ClusterAdminAccess
+#      - RootAccountAccess
+#      - CfnK8sExecutionRoleAccess
+#    Properties:
+#      ClusterName: !Ref ClusterName
+#      Manifest: !Sub |
+#        apiVersion: v1
+#        kind: ServiceAccount
+#        metadata:
+#          name: ack-sagemaker-controller
+#          namespace: ack-system
+#          annotations:
+#            eks.amazonaws.com/role-arn: ${SageMakerIrsaRole.Arn}
 
 # ---------------------------------------------------------------------------
 #  Lambda‑backed custom resource that installs / removes the SageMaker ACK
@@ -390,7 +329,7 @@ Resources:
   AckSageMakerFunctionRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub 'CFN-Registry-ExecRole-${ClusterName}'
+      RoleName: CFN-Registry-ExecRole        # single role reused by CFN handler
       AssumeRolePolicyDocument:
         Statement:
         - Effect: Allow
@@ -415,15 +354,19 @@ Resources:
   CfnK8sExecutionRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub 'CFN-K8s-ExecutionRole-${ClusterName}'
+      RoleName: CFN-K8s-ExecutionRole
       AssumeRolePolicyDocument:
         Statement:
           - Effect: Allow
             Principal:
               Service:
+                - ec2.amazonaws.com
                 - resources.cloudformation.amazonaws.com
                 - lambda.amazonaws.com
             Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+        - arn:aws:iam::aws:policy/AdministratorAccess
       Policies:
         - PolicyName: AllowEKSAccess
           PolicyDocument:
@@ -439,106 +382,3 @@ Resources:
                   - eks:DescribeCluster
                   - lambda:CreateFunction
                   - lambda:DeleteFunction
-                  - lambda:InvokeFunction
-                  - lambda:UpdateFunctionCode
-                  - lambda:UpdateFunctionConfiguration
-                  - logs:CreateLogGroup
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                  - logs:PutRetentionPolicy
-                  - s3:GetObject
-                  - ssm:GetParameter
-                  - sts:GetCallerIdentity
-                Resource: "*"
-              - Effect: Allow
-                Action: iam:PassRole
-                Resource: "*"
-
-  AckSageMakerFunction:
-    Type: AWS::Lambda::Function
-    Properties:
-      Runtime: python3.12
-      Handler: index.handler
-      Timeout: 600
-      MemorySize: 256
-      Role: !GetAtt AckSageMakerFunctionRole.Arn
-      Code:
-        S3Bucket: !Ref S3Bucket
-        S3Key: !Ref S3Key
-
-  AckSageMakerCustom:
-    Type: AWS::CloudFormation::CustomResource
-    DependsOn: SageMakerServiceAccount   # wait for namespace + SA
-    Properties:
-      ServiceToken: !GetAtt AckSageMakerFunction.Arn
-      ClusterName: !Ref ClusterName
-      Namespace:   ack-system
-      ChartRepo:   oci://public.ecr.aws/aws-controllers-k8s/sagemaker-chart
-      ChartName:   sagemaker-chart
-      ChartVersion: "1.2.16"
-      Values: !Sub |
-        aws:
-          region: ${AWS::Region}
-        serviceAccount:
-          create: false
-          name: ack-sagemaker-controller
-
-# ---------------------------------------------------------------------------
-#  DVWA demo application (namespace + Deployment & Service)
-# ---------------------------------------------------------------------------
-
-  DvwaNamespace:
-    Type: Custom::ApplyManifest
-    DependsOn: NodeGroup
-    Properties:
-      ServiceToken: !GetAtt ApplyManifestFunction.Arn
-      Cluster: !Ref ClusterName
-      Manifest:
-        - |
-          apiVersion: v1
-          kind: Namespace
-          metadata:
-            name: dvwa
-
-  DvwaApp:
-    Type: Custom::ApplyManifest
-    DependsOn:
-      - DvwaNamespace
-    Properties:
-      ServiceToken: !GetAtt ApplyManifestFunction.Arn
-      Cluster:  !Ref ClusterName
-      Manifest:
-        - |
-          apiVersion: apps/v1
-          kind: Deployment
-          metadata:
-            name: dvwa
-            namespace: dvwa
-          spec:
-            replicas: 1
-            selector:
-              matchLabels:
-                app: dvwa
-            template:
-              metadata:
-                labels:
-                  app: dvwa
-              spec:
-                containers:
-                  - name: dvwa
-                    image: vulnerables/web-dvwa:latest
-                    ports:
-                      - containerPort: 80
-        - |
-          apiVersion: v1
-          kind: Service
-          metadata:
-            name: dvwa
-            namespace: dvwa
-          spec:
-            type: LoadBalancer
-            selector:
-              app: dvwa
-            ports:
-              - port: 80
-                targetPort: 80
